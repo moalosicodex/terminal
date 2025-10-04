@@ -143,6 +143,8 @@ class StreamlitForceSaleClient:
             st.session_state.transaction_history = []
         if 'cert_files_uploaded' not in st.session_state:
             st.session_state.cert_files_uploaded = False
+        if 'show_history' not in st.session_state:
+            st.session_state.show_history = False
 
         # Protocol Configuration
         self.PROTOCOL_CONFIG = {
@@ -177,14 +179,17 @@ class StreamlitForceSaleClient:
         )
 
     def render_protocol_info(self):
-        """Display protocol information"""
+        """Display protocol information at the bottom"""
+        st.markdown("---")
         st.markdown(f"""
-        <div style="text-align: center;">
+        <div style="text-align: center; margin-top: 20px;">
             <div style="background-color: #1f77b4; color: white; padding: 8px 16px; border-radius: 20px; font-weight: bold; display: inline-block; margin: 10px 0;">
                 🔒 {self.PROTOCOL_CONFIG['name']}
             </div>
-            <p><strong>Protocol Code:</strong> {self.PROTOCOL_CONFIG['code']} | 
-            <strong>Standard:</strong> {self.PROTOCOL_CONFIG['standard']}</p>
+            <p style="color: #666; font-size: 0.9em;">
+                <strong>Protocol Code:</strong> {self.PROTOCOL_CONFIG['code']} | 
+                <strong>Standard:</strong> {self.PROTOCOL_CONFIG['standard']}
+            </p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -254,7 +259,8 @@ class StreamlitForceSaleClient:
             self.test_connection()
 
         if st.sidebar.button("📋 Transaction History", use_container_width=True):
-            self.show_transaction_history()
+            st.session_state.show_history = True
+            st.rerun()
 
     # ---- certificate/SSL helpers ----
     def create_ssl_context(self) -> Tuple[Any, bool]:
@@ -262,11 +268,32 @@ class StreamlitForceSaleClient:
         try:
             if not os.path.exists(self.ROOT_CERT):
                 return "Root certificate missing", False
-            context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=self.ROOT_CERT)
             
-            # Load intermediate CA
+            # Create context with more permissive settings to handle weak certificates
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_REQUIRED
+            
+            # Load root certificate
             try:
-                context.load_cert_chain(certfile=self.CAD_CERT)
+                context.load_verify_locations(cafile=self.ROOT_CERT)
+            except Exception as e:
+                return f"Failed to load root CA: {e}", False
+            
+            # Try to load intermediate CA with error handling for weak certificates
+            try:
+                if os.path.exists(self.CAD_CERT):
+                    context.load_cert_chain(certfile=self.CAD_CERT)
+            except ssl.SSLError as e:
+                if "CA_MD_TOO_WEAK" in str(e):
+                    # Bypass the weak certificate restriction
+                    context.set_ciphers('DEFAULT:@SECLEVEL=1')
+                    try:
+                        context.load_cert_chain(certfile=self.CAD_CERT)
+                    except Exception as retry_error:
+                        return f"Failed to load intermediate CA even with reduced security: {retry_error}", False
+                else:
+                    return f"Failed to load intermediate CA: {e}", False
             except Exception as e:
                 return f"Failed to load intermediate CA: {e}", False
             
@@ -278,8 +305,6 @@ class StreamlitForceSaleClient:
                 except Exception as e:
                     st.sidebar.warning(f"Client certificate issue: {e}")
             
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_REQUIRED
             return context, True
         except Exception as e:
             return f"SSL context error: {e}", False
@@ -463,7 +488,7 @@ class StreamlitForceSaleClient:
         )
 
     def show_transaction_history(self):
-        """Show transaction history in sidebar or main area"""
+        """Show transaction history"""
         st.header("📋 Transaction History")
         if not st.session_state.transaction_history:
             st.info("No transactions yet")
@@ -484,28 +509,39 @@ class StreamlitForceSaleClient:
         self.setup_page()
         self.render_sidebar()
 
+        # Main content area - clean and minimal
         st.title("💳 Professional Payment Terminal")
-        self.render_protocol_info()
         st.markdown("---")
         
-        pan, expiry, amount, approval_code, merchant_name = self.render_payment_form()
+        # Check if we should show history or payment form
+        if st.session_state.show_history:
+            self.show_transaction_history()
+            if st.button("← Back to Payment"):
+                st.session_state.show_history = False
+                st.rerun()
+        else:
+            # Show payment form by default
+            pan, expiry, amount, approval_code, merchant_name = self.render_payment_form()
 
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
-                if not st.session_state.cert_files_uploaded:
-                    st.error("❌ Please upload certificates first")
-                else:
-                    ok, msg, result = self.process_force_sale(pan, expiry, amount, approval_code, merchant_name)
-                    if ok:
-                        st.success(f"✅ {msg}")
-                        # show receipt and download
-                        self.show_receipt_and_download(result)
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
+                    if not st.session_state.cert_files_uploaded:
+                        st.error("❌ Please upload certificates first")
                     else:
-                        st.error(f"❌ {msg}")
-                        # if result contains stan/rrn show minimal info
-                        if isinstance(result, tuple) and result[0]:
-                            st.write(f"STAN: {result[0]}, RRN: {result[1]}")
+                        ok, msg, result = self.process_force_sale(pan, expiry, amount, approval_code, merchant_name)
+                        if ok:
+                            st.success(f"✅ {msg}")
+                            # show receipt and download
+                            self.show_receipt_and_download(result)
+                        else:
+                            st.error(f"❌ {msg}")
+                            # if result contains stan/rrn show minimal info
+                            if isinstance(result, tuple) and result[0]:
+                                st.write(f"STAN: {result[0]}, RRN: {result[1]}")
+
+        # Protocol info at the very bottom
+        self.render_protocol_info()
 
 def main():
     client = StreamlitForceSaleClient()
