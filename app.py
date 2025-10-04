@@ -145,6 +145,8 @@ class StreamlitForceSaleClient:
             st.session_state.cert_files_uploaded = False
         if 'show_history' not in st.session_state:
             st.session_state.show_history = False
+        if 'demo_mode' not in st.session_state:
+            st.session_state.demo_mode = False
 
         # Protocol Configuration
         self.PROTOCOL_CONFIG = {
@@ -179,10 +181,9 @@ class StreamlitForceSaleClient:
         )
 
     def render_protocol_info(self):
-        """Display protocol information at the bottom"""
-        st.markdown("---")
+        """Display protocol information below main title"""
         st.markdown(f"""
-        <div style="text-align: center; margin-top: 20px;">
+        <div style="text-align: center; margin-bottom: 20px;">
             <div style="background-color: #1f77b4; color: white; padding: 8px 16px; border-radius: 20px; font-weight: bold; display: inline-block; margin: 10px 0;">
                 🔒 {self.PROTOCOL_CONFIG['name']}
             </div>
@@ -237,7 +238,8 @@ class StreamlitForceSaleClient:
             st.sidebar.success("client.key saved")
 
         # Check certificate status
-        if os.path.exists(self.CAD_CERT) and os.path.exists(self.ROOT_CERT):
+        certs_ready = os.path.exists(self.CAD_CERT) and os.path.exists(self.ROOT_CERT)
+        if certs_ready:
             st.sidebar.success("✅ Required certificates present")
             st.session_state.cert_files_uploaded = True
             
@@ -253,6 +255,7 @@ class StreamlitForceSaleClient:
                 st.sidebar.info("ℹ️ Using server authentication only")
         else:
             st.sidebar.error("❌ Please upload cad.crt and root.crt")
+            st.session_state.demo_mode = True
 
         st.sidebar.markdown("---")
         if st.sidebar.button("🔄 Test Connection", use_container_width=True):
@@ -262,6 +265,12 @@ class StreamlitForceSaleClient:
             st.session_state.show_history = True
             st.rerun()
 
+        # Demo mode button when certificates aren't ready
+        if not certs_ready:
+            st.sidebar.markdown("---")
+            if st.sidebar.button("🎮 Process Demo Transaction", use_container_width=True, type="secondary"):
+                self.process_demo_transaction()
+
     # ---- certificate/SSL helpers ----
     def create_ssl_context(self) -> Tuple[Any, bool]:
         """Create SSL context trusting root.crt; use cad.crt and optionally client certs."""
@@ -269,10 +278,15 @@ class StreamlitForceSaleClient:
             if not os.path.exists(self.ROOT_CERT):
                 return "Root certificate missing", False
             
-            # Create context with more permissive settings to handle weak certificates
+            # Create context with minimal security requirements to handle weak certificates
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.check_hostname = False
             context.verify_mode = ssl.CERT_REQUIRED
+            
+            # Set minimum security level to handle weak certificates
+            context.set_ciphers('DEFAULT:@SECLEVEL=0')  # Lowest security level
+            context.options |= ssl.OP_NO_SSLv2
+            context.options |= ssl.OP_NO_SSLv3
             
             # Load root certificate
             try:
@@ -280,22 +294,13 @@ class StreamlitForceSaleClient:
             except Exception as e:
                 return f"Failed to load root CA: {e}", False
             
-            # Try to load intermediate CA with error handling for weak certificates
+            # Try to load intermediate CA - skip if it fails due to weak certificates
             try:
                 if os.path.exists(self.CAD_CERT):
                     context.load_cert_chain(certfile=self.CAD_CERT)
-            except ssl.SSLError as e:
-                if "CA_MD_TOO_WEAK" in str(e):
-                    # Bypass the weak certificate restriction
-                    context.set_ciphers('DEFAULT:@SECLEVEL=1')
-                    try:
-                        context.load_cert_chain(certfile=self.CAD_CERT)
-                    except Exception as retry_error:
-                        return f"Failed to load intermediate CA even with reduced security: {retry_error}", False
-                else:
-                    return f"Failed to load intermediate CA: {e}", False
             except Exception as e:
-                return f"Failed to load intermediate CA: {e}", False
+                # If intermediate CA loading fails, continue without it
+                st.warning(f"⚠️ Intermediate CA loading issue: {e}. Continuing without intermediate certificate.")
             
             # Optionally load client certificate and key if both are present
             if os.path.exists(self.CLIENT_CERT) and os.path.exists(self.CLIENT_KEY):
@@ -405,6 +410,62 @@ class StreamlitForceSaleClient:
         buffer.seek(0)
         return buffer
 
+    # ---- Demo transaction ----
+    def process_demo_transaction(self):
+        """Process a demo transaction for testing"""
+        st.info("🔄 Processing demo transaction...")
+        
+        # Generate demo transition IDs
+        demo_stan = str(st.session_state.stan_counter).zfill(6)
+        demo_rrn = demo_stan + "FSL"
+        st.session_state.stan_counter += 1
+        
+        # Simulate processing delay
+        with st.spinner("Processing payment..."):
+            time.sleep(2)
+        
+        # Demo result
+        st.success("✅ Demo Payment Approved!")
+        
+        # Create demo receipt data
+        demo_data = {
+            'card_input': '4111111111111111',
+            'expiry_input': '1225',
+            'amount': 25.00,
+            'approval_input': '123456',
+            'merchant_name': 'Demo Electronics Store'
+        }
+        
+        demo_result = {
+            'response_message': 'APPROVED',
+            'approval_code': 'DEMO123',
+            'auth_code': '123456',
+            'response_code': '00',
+            'systems_trace_number': demo_stan,
+            'retrieval_reference_number': demo_rrn,
+            'protocol': self.PROTOCOL_CONFIG['name'],
+            'transaction_type': 'Force Sale'
+        }
+        
+        # Add to transaction history
+        transaction_record = {
+            'timestamp': datetime.now(),
+            'amount': demo_data['amount'],
+            'card': mask_pan_for_display(demo_data['card_input']),
+            'status': 'APPROVED',
+            'approval_code': 'DEMO123',
+            'response_code': '00',
+            'stan': demo_stan,
+            'rrn': demo_rrn,
+            'demo': True,
+            'merchant_name': demo_data['merchant_name'],
+            'protocol': self.PROTOCOL_CONFIG['name']
+        }
+        st.session_state.transaction_history.append(transaction_record)
+        
+        # Show receipt
+        self.show_receipt_and_download(transaction_record)
+
     # ---- high-level transaction flow ----
     def process_force_sale(self, pan: str, expiry: str, amount: float, approval_code: str, merchant_name: str):
         # validate basic
@@ -438,7 +499,8 @@ class StreamlitForceSaleClient:
             "rrn": rrn,
             "stan": stan_str,
             "status": status_text,
-            "protocol": self.PROTOCOL_CONFIG['name']
+            "protocol": self.PROTOCOL_CONFIG['name'],
+            "demo": False
         }
         st.session_state.transaction_history.append(txn)
 
@@ -447,6 +509,11 @@ class StreamlitForceSaleClient:
     # ---- UI: Payment form & actions ----
     def render_payment_form(self):
         st.header("📝 Payment Details")
+        
+        # Show demo mode banner if no certificates
+        if st.session_state.demo_mode:
+            st.warning("🎮 **DEMO MODE** - Upload certificates for live transactions")
+        
         col1, col2 = st.columns(2)
         with col1:
             pan = st.text_input("💳 Card Number (16 digits)", placeholder="4111111111111111", max_chars=19)
@@ -463,6 +530,10 @@ class StreamlitForceSaleClient:
         
         st.markdown("### 🧾 Payment Receipt")
         st.markdown("---")
+        
+        # Show demo indicator if it's a demo transaction
+        if txn.get('demo', False):
+            st.info("🎮 **This is a demo transaction**")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -495,7 +566,8 @@ class StreamlitForceSaleClient:
             return
         
         for i, txn in enumerate(reversed(st.session_state.transaction_history[-10:])):
-            with st.expander(f"Transaction {i+1} - ${txn['amount']:.2f} - {txn['timestamp'].strftime('%H:%M:%S')}"):
+            demo_indicator = " 🎮" if txn.get('demo', False) else ""
+            with st.expander(f"Transaction {i+1} - ${txn['amount']:.2f} - {txn['timestamp'].strftime('%H:%M:%S')}{demo_indicator}"):
                 st.write(f"**Merchant:** {txn['merchant_name']}")
                 st.write(f"**Card:** {mask_pan_for_display(txn['pan'])}")
                 st.write(f"**Amount:** ${txn['amount']:.2f}")
@@ -503,14 +575,20 @@ class StreamlitForceSaleClient:
                 st.write(f"**Approval:** {txn['approval_code']}")
                 st.write(f"**Reference:** {txn['rrn']}")
                 st.write(f"**Protocol:** {txn.get('protocol', self.PROTOCOL_CONFIG['name'])}")
+                if txn.get('demo', False):
+                    st.write("**Type:** 🎮 Demo Transaction")
 
     # ---- main run ----
     def run(self):
         self.setup_page()
         self.render_sidebar()
 
-        # Main content area - clean and minimal
+        # Main content area
         st.title("💳 Professional Payment Terminal")
+        
+        # Protocol info below main title
+        self.render_protocol_info()
+        
         st.markdown("---")
         
         # Check if we should show history or payment form
@@ -525,23 +603,24 @@ class StreamlitForceSaleClient:
 
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
-                if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
-                    if not st.session_state.cert_files_uploaded:
-                        st.error("❌ Please upload certificates first")
-                    else:
-                        ok, msg, result = self.process_force_sale(pan, expiry, amount, approval_code, merchant_name)
-                        if ok:
-                            st.success(f"✅ {msg}")
-                            # show receipt and download
-                            self.show_receipt_and_download(result)
+                if st.session_state.demo_mode:
+                    if st.button("🎮 Process Demo Transaction", type="secondary", use_container_width=True):
+                        self.process_demo_transaction()
+                else:
+                    if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
+                        if not st.session_state.cert_files_uploaded:
+                            st.error("❌ Please upload certificates first")
                         else:
-                            st.error(f"❌ {msg}")
-                            # if result contains stan/rrn show minimal info
-                            if isinstance(result, tuple) and result[0]:
-                                st.write(f"STAN: {result[0]}, RRN: {result[1]}")
-
-        # Protocol info at the very bottom
-        self.render_protocol_info()
+                            ok, msg, result = self.process_force_sale(pan, expiry, amount, approval_code, merchant_name)
+                            if ok:
+                                st.success(f"✅ {msg}")
+                                # show receipt and download
+                                self.show_receipt_and_download(result)
+                            else:
+                                st.error(f"❌ {msg}")
+                                # if result contains stan/rrn show minimal info
+                                if isinstance(result, tuple) and result[0]:
+                                    st.write(f"STAN: {result[0]}, RRN: {result[1]}")
 
 def main():
     client = StreamlitForceSaleClient()
