@@ -399,4 +399,4 @@ class StreamlitForceSaleClient:
                     st.error(f"❌ {msg}")
                     # if result contains stan/rrn show minimal info
                     if isinstance(result, tuple) and result[0]:
-                        st.
+                      st.write("Some debug message")
