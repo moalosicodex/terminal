@@ -90,7 +90,7 @@ class StreamlitForceSaleClient:
             initial_sidebar_state="expanded"
         )
         
-        # Custom CSS
+        # Custom CSS with modal styling
         st.markdown("""
         <style>
         .main-header {
@@ -108,20 +108,45 @@ class StreamlitForceSaleClient:
             display: inline-block;
             margin: 10px 0;
         }
-        .receipt-container {
-            border: 3px solid #1f77b4;
+        
+        /* Modal Overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+        
+        /* Modal Content */
+        .modal-content {
+            background: white;
+            padding: 0;
             border-radius: 15px;
-            padding: 25px;
-            margin: 20px 0;
+            box-shadow: 0 10px 50px rgba(0,0,0,0.3);
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        /* Receipt Styling */
+        .receipt-container {
+            padding: 30px;
             background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
             font-family: 'Courier New', monospace;
         }
         .receipt-header {
             text-align: center;
             border-bottom: 2px dashed #1f77b4;
-            padding-bottom: 15px;
-            margin-bottom: 20px;
+            padding-bottom: 20px;
+            margin-bottom: 25px;
         }
         .receipt-merchant {
             font-size: 1.4em;
@@ -138,7 +163,7 @@ class StreamlitForceSaleClient:
         .receipt-details {
             width: 100%;
             border-collapse: collapse;
-            margin: 15px 0;
+            margin: 20px 0;
         }
         .receipt-details td {
             padding: 12px 8px;
@@ -174,7 +199,7 @@ class StreamlitForceSaleClient:
         .receipt-footer {
             text-align: center;
             margin-top: 25px;
-            padding-top: 15px;
+            padding-top: 20px;
             border-top: 2px dashed #1f77b4;
             color: #6c757d;
         }
@@ -182,9 +207,37 @@ class StreamlitForceSaleClient:
             background: #e7f3ff;
             border-radius: 10px;
             padding: 15px;
-            margin: 15px 0;
+            margin: 20px 0;
             border-left: 4px solid #1f77b4;
         }
+        
+        /* Action Buttons */
+        .receipt-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 25px;
+            justify-content: center;
+        }
+        
+        /* Close Button */
+        .close-button {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        }
+        
         .success-box {
             border: 2px solid #28a745;
             background-color: #d4edda;
@@ -215,11 +268,11 @@ class StreamlitForceSaleClient:
             text-align: center;
             margin: 10px 0;
         }
-        .receipt-actions {
-            display: flex;
-            justify-content: center;
-            gap: 10px;
-            margin-top: 20px;
+        
+        /* Blur background when modal is open */
+        .main-content.blur {
+            filter: blur(5px);
+            pointer-events: none;
         }
         </style>
         """, unsafe_allow_html=True)
@@ -909,8 +962,8 @@ class StreamlitForceSaleClient:
             st.session_state.show_receipt = True
             st.rerun()
 
-    def show_receipt_popup(self):
-        """Show receipt in a beautiful popup style"""
+    def show_receipt_modal(self):
+        """Show receipt in a modal popup"""
         if not st.session_state.show_receipt or not st.session_state.current_receipt_data:
             return
             
@@ -930,64 +983,90 @@ class StreamlitForceSaleClient:
         status_class = "receipt-status-approved" if is_approved else "receipt-status-declined"
         status_display = "✅ APPROVED" if is_approved else "❌ DECLINED"
         
-        # Create beautiful receipt
-        receipt_html = f"""
-        <div class="receipt-container">
-            <div class="receipt-header">
-                <div class="receipt-merchant">{form_data['merchant_name']}</div>
-                <div class="receipt-title">PAYMENT RECEIPT</div>
-                <div style="color: #6c757d; font-size: 0.9em;">{protocol} Transaction</div>
-            </div>
-            
-            <table class="receipt-details">
-                <tr>
-                    <td class="receipt-label">Transaction Type:</td>
-                    <td class="receipt-value">FORCE SALE</td>
-                </tr>
-                <tr>
-                    <td class="receipt-label">Card Number:</td>
-                    <td class="receipt-value">{self.format_card_display(form_data['card_input'])}</td>
-                </tr>
-                <tr>
-                    <td class="receipt-label">Amount:</td>
-                    <td class="receipt-value receipt-amount">${form_data['amount']:.2f}</td>
-                </tr>
-                <tr>
-                    <td class="receipt-label">Date/Time:</td>
-                    <td class="receipt-value">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
-                </tr>
-                <tr>
-                    <td class="receipt-label">Status:</td>
-                    <td class="receipt-value {status_class}">{status_display}</td>
-                </tr>
-                <tr>
-                    <td class="receipt-label">Approval Code:</td>
-                    <td class="receipt-value">{result.get('approval_code', result.get('auth_code', 'N/A'))}</td>
-                </tr>
-                <tr>
-                    <td class="receipt-label">Terminal ID:</td>
-                    <td class="receipt-value">{st.session_state.terminal_id}</td>
-                </tr>
-            </table>
-            
-            <div class="receipt-transaction-info">
-                <strong>Transaction References:</strong><br>
-                • <strong>Reference Number:</strong> {rrn}<br>
-                • <strong>Trace Number:</strong> {stan}<br>
-                • <strong>Processing Network:</strong> {protocol}
-            </div>
-            
-            <div class="receipt-footer">
-                <strong>Thank you for your business! 💝</strong><br>
-                <small>This receipt is proof of your transaction</small>
+        # Create modal with receipt
+        modal_html = f"""
+        <div class="modal-overlay">
+            <div class="modal-content">
+                <button class="close-button" onclick="window.closeModal()">×</button>
+                <div class="receipt-container">
+                    <div class="receipt-header">
+                        <div class="receipt-merchant">{form_data['merchant_name']}</div>
+                        <div class="receipt-title">PAYMENT RECEIPT</div>
+                        <div style="color: #6c757d; font-size: 0.9em;">{protocol} Transaction</div>
+                    </div>
+                    
+                    <table class="receipt-details">
+                        <tr>
+                            <td class="receipt-label">Transaction Type:</td>
+                            <td class="receipt-value">FORCE SALE</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Card Number:</td>
+                            <td class="receipt-value">{self.format_card_display(form_data['card_input'])}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Amount:</td>
+                            <td class="receipt-value receipt-amount">${form_data['amount']:.2f}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Date/Time:</td>
+                            <td class="receipt-value">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Status:</td>
+                            <td class="receipt-value {status_class}">{status_display}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Approval Code:</td>
+                            <td class="receipt-value">{result.get('approval_code', result.get('auth_code', 'N/A'))}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Terminal ID:</td>
+                            <td class="receipt-value">{st.session_state.terminal_id}</td>
+                        </tr>
+                    </table>
+                    
+                    <div class="receipt-transaction-info">
+                        <strong>Transaction References:</strong><br>
+                        • <strong>Reference Number:</strong> {rrn}<br>
+                        • <strong>Trace Number:</strong> {stan}<br>
+                        • <strong>Processing Network:</strong> {protocol}
+                    </div>
+                    
+                    <div class="receipt-footer">
+                        <strong>Thank you for your business! 💝</strong><br>
+                        <small>This receipt is proof of your transaction</small>
+                    </div>
+                </div>
             </div>
         </div>
+        
+        <script>
+        function closeModal() {{
+            // This will trigger a Streamlit rerun with show_receipt = false
+            window.parent.postMessage({{'type': 'streamlit:setComponentValue', 'value': 'close_receipt'}}, '*');
+        }}
+        
+        // Close modal when clicking outside
+        document.addEventListener('click', function(event) {{
+            if (event.target.classList.contains('modal-overlay')) {{
+                closeModal();
+            }}
+        }});
+        
+        // Close modal with Escape key
+        document.addEventListener('keydown', function(event) {{
+            if (event.key === 'Escape') {{
+                closeModal();
+            }}
+        }});
+        </script>
         """
         
-        # Display the receipt
-        st.markdown(receipt_html, unsafe_allow_html=True)
+        # Display the modal
+        st.components.v1.html(modal_html, height=800)
         
-        # Action buttons
+        # Action buttons below the modal
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown('<div class="receipt-actions">', unsafe_allow_html=True)
@@ -1003,7 +1082,7 @@ class StreamlitForceSaleClient:
             )
             
             # Close button
-            if st.button("🔄 New Transaction", use_container_width=True):
+            if st.button("🔄 New Transaction", use_container_width=True, key="new_transaction"):
                 st.session_state.show_receipt = False
                 st.session_state.current_receipt_data = None
                 st.rerun()
@@ -1094,9 +1173,9 @@ Thank you for your business!
         self.render_sidebar()
         self.render_main_header()
         
-        # Show receipt popup if needed
+        # Show receipt modal if needed
         if st.session_state.show_receipt:
-            self.show_receipt_popup()
+            self.show_receipt_modal()
         else:
             # Check if certificates are ready
             cert_valid, _ = self.check_certificates()
