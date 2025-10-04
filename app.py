@@ -176,13 +176,16 @@ class StreamlitForceSaleClient:
         key = st.sidebar.file_uploader("Client Key (optional, client.key)", type=["key", "pem"], key="ckey")
 
         if cad:
-            (open(self.CAD_CERT, "wb")).write(cad.getvalue())
+            with open(self.CAD_CERT, "wb") as f:
+                f.write(cad.getvalue())
             st.sidebar.success("cad.crt saved")
         if root:
-            (open(self.ROOT_CERT, "wb")).write(root.getvalue())
+            with open(self.ROOT_CERT, "wb") as f:
+                f.write(root.getvalue())
             st.sidebar.success("root.crt saved")
         if key:
-            (open(self.CLIENT_KEY, "wb")).write(key.getvalue())
+            with open(self.CLIENT_KEY, "wb") as f:
+                f.write(key.getvalue())
             st.sidebar.info("client.key saved (optional)")
 
         if os.path.exists(self.CAD_CERT) and os.path.exists(self.ROOT_CERT):
@@ -399,4 +402,11 @@ class StreamlitForceSaleClient:
                     st.error(f"❌ {msg}")
                     # if result contains stan/rrn show minimal info
                     if isinstance(result, tuple) and result[0]:
-                      st.write("Some debug message")
+                        st.write(f"STAN: {result[0]}, RRN: {result[1]}")
+
+def main():
+    client = StreamlitForceSaleClient()
+    client.run()
+
+if __name__ == "__main__":
+    main()
