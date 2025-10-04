@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Professional Payment Terminal Web Application
-Visa Base I Protocol - Complete Implementation
+Visa Base I Protocol - 101.1 4digit online
 """
 
 import streamlit as st
