@@ -52,6 +52,10 @@ class StreamlitForceSaleClient:
             st.session_state.transaction_history = []
         if 'cert_files_uploaded' not in st.session_state:
             st.session_state.cert_files_uploaded = False
+        if 'show_receipt' not in st.session_state:
+            st.session_state.show_receipt = False
+        if 'current_receipt_data' not in st.session_state:
+            st.session_state.current_receipt_data = None
             
         self.SERVERS = {
             'primary': {'host': '102.163.40.20', 'port': 8090},
@@ -104,12 +108,82 @@ class StreamlitForceSaleClient:
             display: inline-block;
             margin: 10px 0;
         }
-        .receipt-box {
-            border: 2px solid #1f77b4;
-            border-radius: 10px;
-            padding: 20px;
+        .receipt-container {
+            border: 3px solid #1f77b4;
+            border-radius: 15px;
+            padding: 25px;
+            margin: 20px 0;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            font-family: 'Courier New', monospace;
+        }
+        .receipt-header {
+            text-align: center;
+            border-bottom: 2px dashed #1f77b4;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+        .receipt-merchant {
+            font-size: 1.4em;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        .receipt-title {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #1f77b4;
             margin: 10px 0;
-            background-color: #f0f8ff;
+        }
+        .receipt-details {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        .receipt-details td {
+            padding: 12px 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .receipt-details tr:last-child td {
+            border-bottom: none;
+        }
+        .receipt-label {
+            font-weight: bold;
+            color: #495057;
+            width: 40%;
+        }
+        .receipt-value {
+            color: #2c3e50;
+            text-align: right;
+        }
+        .receipt-amount {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #28a745;
+        }
+        .receipt-status-approved {
+            color: #28a745;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .receipt-status-declined {
+            color: #dc3545;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .receipt-footer {
+            text-align: center;
+            margin-top: 25px;
+            padding-top: 15px;
+            border-top: 2px dashed #1f77b4;
+            color: #6c757d;
+        }
+        .receipt-transaction-info {
+            background: #e7f3ff;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 15px 0;
+            border-left: 4px solid #1f77b4;
         }
         .success-box {
             border: 2px solid #28a745;
@@ -133,13 +207,6 @@ class StreamlitForceSaleClient:
             margin: 10px 0;
             background-color: #fff3cd;
         }
-        .transition-info {
-            background-color: #e7f3ff;
-            border-left: 4px solid #1f77b4;
-            padding: 15px;
-            margin: 15px 0;
-            border-radius: 5px;
-        }
         .demo-banner {
             background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
             color: white;
@@ -147,6 +214,12 @@ class StreamlitForceSaleClient:
             border-radius: 10px;
             text-align: center;
             margin: 10px 0;
+        }
+        .receipt-actions {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 20px;
         }
         </style>
         """, unsafe_allow_html=True)
@@ -275,7 +348,7 @@ class StreamlitForceSaleClient:
                 if st.button("📋 Transaction History"):
                     self.show_transaction_history()
                     
-                if st.button("🆘 Process Demo"):
+                if st.button("🎮 Process Demo"):
                     self.process_demo_transaction()
             else:
                 st.warning("⚠️ Please upload certificates to continue")
@@ -322,8 +395,8 @@ class StreamlitForceSaleClient:
             'card_input': '4111111111111111',
             'expiry_input': '1225',
             'amount': 25.00,
-            'approval_input': '1234',
-            'merchant_name': 'Demo Store'
+            'approval_input': '123456',
+            'merchant_name': 'Demo Electronics Store'
         }
         
         demo_result = {
@@ -351,8 +424,13 @@ class StreamlitForceSaleClient:
         }
         st.session_state.transaction_history.append(transaction_record)
         
-        # Show receipt
-        self.show_receipt(demo_data, demo_result)
+        # Store receipt data for popup
+        st.session_state.current_receipt_data = {
+            'form_data': demo_data,
+            'result': demo_result
+        }
+        st.session_state.show_receipt = True
+        st.rerun()
 
     def render_main_header(self):
         """Render main header with protocol info"""
@@ -823,98 +901,114 @@ class StreamlitForceSaleClient:
             }
             st.session_state.transaction_history.append(transaction_record)
             
-            # Show receipt
-            self.show_receipt(form_data, result)
+            # Store receipt data for popup
+            st.session_state.current_receipt_data = {
+                'form_data': form_data,
+                'result': result
+            }
+            st.session_state.show_receipt = True
+            st.rerun()
 
-    def show_receipt(self, form_data, result):
-        """Show payment receipt with clean, professional output"""
-        st.markdown("---")
-        st.header("🧾 Payment Receipt")
+    def show_receipt_popup(self):
+        """Show receipt in a beautiful popup style"""
+        if not st.session_state.show_receipt or not st.session_state.current_receipt_data:
+            return
+            
+        form_data = st.session_state.current_receipt_data['form_data']
+        result = st.session_state.current_receipt_data['result']
         
-        # Get transition IDs - handle both real and demo transactions
+        # Get transition IDs
         stan = result.get('systems_trace_number', 
                          st.session_state.last_transaction.get('stan', 'N/A') if st.session_state.last_transaction else 'N/A')
         rrn = result.get('retrieval_reference_number', 
                         st.session_state.last_transaction.get('rrn', 'N/A') if st.session_state.last_transaction else 'N/A')
         protocol = result.get('protocol', self.PROTOCOL_CONFIG['name'])
         
-        # Clean status message
+        # Determine status and styling
         status_message = result.get('response_message', 'PROCESSED')
-        if 'APPROVED' in status_message.upper() or (result.get('response_code') == '00'):
-            status_display = "✅ APPROVED"
-            box_class = "success-box"
-        elif 'DECLINED' in status_message.upper():
-            status_display = "❌ DECLINED"
-            box_class = "error-box"
-        else:
-            status_display = f"⚠️ {status_message}"
-            box_class = "warning-box"
+        is_approved = 'APPROVED' in status_message.upper() or (result.get('response_code') == '00')
+        status_class = "receipt-status-approved" if is_approved else "receipt-status-declined"
+        status_display = "✅ APPROVED" if is_approved else "❌ DECLINED"
         
-        # Display transition IDs in a clean format
-        st.markdown(f"""
-        <div class="transition-info">
-            <strong>Transaction Details:</strong><br>
-            • <strong>Reference Number:</strong> {rrn}<br>
-            • <strong>Trace Number:</strong> {stan}<br>
-            • <strong>Processing Network:</strong> {protocol}
-        </div>
-        """, unsafe_allow_html=True)
-        
+        # Create beautiful receipt
         receipt_html = f"""
-        <div class="receipt-box {box_class}">
-            <h3 style="text-align: center; margin-bottom: 15px;">💳 PAYMENT RECEIPT</h3>
-            <p style="text-align: center; margin-bottom: 20px; font-weight: bold;">{form_data['merchant_name']}</p>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>Transaction Type:</strong></td>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;">FORCE SALE</td>
-            </tr>
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>Card Number:</strong></td>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;">{self.format_card_display(form_data['card_input'])}</td>
-            </tr>
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>Amount:</strong></td>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>${form_data['amount']:.2f}</strong></td>
-            </tr>
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>Date/Time:</strong></td>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
-            </tr>
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>Status:</strong></td>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>{status_display}</strong></td>
-            </tr>
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>Approval Code:</strong></td>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;">{result.get('approval_code', result.get('auth_code', 'N/A'))}</td>
-            </tr>
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;"><strong>Terminal ID:</strong></td>
-                <td style="padding: 10px; border-bottom: 1px solid #ccc;">{st.session_state.terminal_id}</td>
-            </tr>
-            </table>
-            
-            <div style="text-align: center; margin-top: 25px; padding: 15px; background-color: #e8f5e8; border-radius: 5px;">
-                <strong>Transaction Completed Successfully</strong><br>
-                <small>Processed via {protocol}</small>
+        <div class="receipt-container">
+            <div class="receipt-header">
+                <div class="receipt-merchant">{form_data['merchant_name']}</div>
+                <div class="receipt-title">PAYMENT RECEIPT</div>
+                <div style="color: #6c757d; font-size: 0.9em;">{protocol} Transaction</div>
             </div>
             
-            <p style="text-align: center; margin-top: 20px; font-weight: bold;">Thank you for your business! 💝</p>
+            <table class="receipt-details">
+                <tr>
+                    <td class="receipt-label">Transaction Type:</td>
+                    <td class="receipt-value">FORCE SALE</td>
+                </tr>
+                <tr>
+                    <td class="receipt-label">Card Number:</td>
+                    <td class="receipt-value">{self.format_card_display(form_data['card_input'])}</td>
+                </tr>
+                <tr>
+                    <td class="receipt-label">Amount:</td>
+                    <td class="receipt-value receipt-amount">${form_data['amount']:.2f}</td>
+                </tr>
+                <tr>
+                    <td class="receipt-label">Date/Time:</td>
+                    <td class="receipt-value">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
+                </tr>
+                <tr>
+                    <td class="receipt-label">Status:</td>
+                    <td class="receipt-value {status_class}">{status_display}</td>
+                </tr>
+                <tr>
+                    <td class="receipt-label">Approval Code:</td>
+                    <td class="receipt-value">{result.get('approval_code', result.get('auth_code', 'N/A'))}</td>
+                </tr>
+                <tr>
+                    <td class="receipt-label">Terminal ID:</td>
+                    <td class="receipt-value">{st.session_state.terminal_id}</td>
+                </tr>
+            </table>
+            
+            <div class="receipt-transaction-info">
+                <strong>Transaction References:</strong><br>
+                • <strong>Reference Number:</strong> {rrn}<br>
+                • <strong>Trace Number:</strong> {stan}<br>
+                • <strong>Processing Network:</strong> {protocol}
+            </div>
+            
+            <div class="receipt-footer">
+                <strong>Thank you for your business! 💝</strong><br>
+                <small>This receipt is proof of your transaction</small>
+            </div>
         </div>
         """
         
+        # Display the receipt
         st.markdown(receipt_html, unsafe_allow_html=True)
         
-        # Download button
-        receipt_text = self.generate_receipt_text(form_data, result, stan, rrn, protocol, status_display)
-        st.download_button(
-            label="📄 Download Receipt",
-            data=receipt_text,
-            file_name=f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain"
-        )
+        # Action buttons
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown('<div class="receipt-actions">', unsafe_allow_html=True)
+            
+            # Download button
+            receipt_text = self.generate_receipt_text(form_data, result, stan, rrn, protocol, status_display)
+            st.download_button(
+                label="📄 Download Receipt",
+                data=receipt_text,
+                file_name=f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+            
+            # Close button
+            if st.button("🔄 New Transaction", use_container_width=True):
+                st.session_state.show_receipt = False
+                st.session_state.current_receipt_data = None
+                st.rerun()
+            
+            st.markdown('</div>', unsafe_allow_html=True)
 
     def generate_receipt_text(self, form_data, result, stan, rrn, protocol, status_display):
         """Generate clean receipt text for download"""
@@ -1000,20 +1094,24 @@ Thank you for your business!
         self.render_sidebar()
         self.render_main_header()
         
-        # Check if certificates are ready
-        cert_valid, _ = self.check_certificates()
-        
-        if not cert_valid and not st.session_state.cert_files_uploaded:
-            self.render_demo_mode()
+        # Show receipt popup if needed
+        if st.session_state.show_receipt:
+            self.show_receipt_popup()
         else:
-            # Payment form
-            form_data = self.render_payment_form()
+            # Check if certificates are ready
+            cert_valid, _ = self.check_certificates()
             
-            # Process payment button
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
-                    self.process_payment(form_data)
+            if not cert_valid and not st.session_state.cert_files_uploaded:
+                self.render_demo_mode()
+            else:
+                # Payment form
+                form_data = self.render_payment_form()
+                
+                # Process payment button
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
+                        self.process_payment(form_data)
 
 def main():
     """Main function"""
