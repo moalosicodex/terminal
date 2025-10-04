@@ -1,8 +1,22 @@
+#!/usr/bin/env python3
+"""
+Professional Payment Terminal Web Application
+Visa Base I Protocol - Complete Implementation
+"""
+
 import streamlit as st
+import socket
+import ssl
+import struct
+import os
+import re
+from datetime import datetime
+from typing import Optional, Dict, Any, Tuple
+import time
 import hashlib
 
 # === PASSWORD PROTECTION === 
-APP_PASSWORD_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # Change this!
+APP_PASSWORD_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # password: password
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -19,30 +33,9 @@ if not st.session_state.authenticated:
     st.stop()
 # === END PASSWORD PROTECTION ===
 
-# Your existing app continues here...
-st.title("💳 Professional Payment Terminal")
-
-
-#!/usr/bin/env python3
-"""
-Professional Payment Terminal Web Application
-With Certificate Management
-"""
-
-import streamlit as st
-import socket
-import ssl
-import struct
-import os
-import re
-from datetime import datetime
-from typing import Optional, Dict, Any, Tuple
-import time
-import base64
-
 class StreamlitForceSaleClient:
     """
-    Complete Force Sale Client with Certificate Management
+    Complete Force Sale Client with Visa Base I Protocol
     """
     
     def __init__(self):
@@ -59,10 +52,25 @@ class StreamlitForceSaleClient:
             st.session_state.transaction_history = []
         if 'cert_files_uploaded' not in st.session_state:
             st.session_state.cert_files_uploaded = False
+        if 'show_receipt' not in st.session_state:
+            st.session_state.show_receipt = False
+        if 'current_receipt_data' not in st.session_state:
+            st.session_state.current_receipt_data = None
             
         self.SERVERS = {
             'primary': {'host': '102.163.40.20', 'port': 8090},
             'secondary': {'host': '10.252.251.5', 'port': 8080}
+        }
+        
+        # Visa Base I Protocol Configuration
+        self.PROTOCOL_CONFIG = {
+            'name': 'Visa Base I',
+            'version': '1.0',
+            'standard': 'ISO 8583:1993',
+            'transaction_type': 'Force Sale',
+            'mti_request': '0200',
+            'processing_code': '000000',
+            'function_code': '200'
         }
         
         # Create certs directory if it doesn't exist
@@ -76,32 +84,169 @@ class StreamlitForceSaleClient:
     def setup_page(self):
         """Configure Streamlit page"""
         st.set_page_config(
-            page_title="Professional Payment Terminal",
+            page_title="Professional Payment Terminal - Visa Base I",
             page_icon="💳",
             layout="wide",
             initial_sidebar_state="expanded"
         )
         
-        # Custom CSS
+        # Custom CSS with modal styling
         st.markdown("""
         <style>
         .main-header {
             font-size: 2.5rem;
             color: #1f77b4;
             text-align: center;
-            margin-bottom: 2rem;
+            margin-bottom: 1rem;
         }
-        .receipt-box {
-            border: 2px solid #1f77b4;
-            border-radius: 10px;
-            padding: 20px;
+        .protocol-badge {
+            background-color: #1f77b4;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            display: inline-block;
             margin: 10px 0;
-            background-color: #f0f8ff;
         }
+        
+        /* Modal Overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+        
+        /* Modal Content */
+        .modal-content {
+            background: white;
+            padding: 0;
+            border-radius: 15px;
+            box-shadow: 0 10px 50px rgba(0,0,0,0.3);
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        /* Receipt Styling */
+        .receipt-container {
+            padding: 30px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            font-family: 'Courier New', monospace;
+        }
+        .receipt-header {
+            text-align: center;
+            border-bottom: 2px dashed #1f77b4;
+            padding-bottom: 20px;
+            margin-bottom: 25px;
+        }
+        .receipt-merchant {
+            font-size: 1.4em;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        .receipt-title {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #1f77b4;
+            margin: 10px 0;
+        }
+        .receipt-details {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .receipt-details td {
+            padding: 12px 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .receipt-details tr:last-child td {
+            border-bottom: none;
+        }
+        .receipt-label {
+            font-weight: bold;
+            color: #495057;
+            width: 40%;
+        }
+        .receipt-value {
+            color: #2c3e50;
+            text-align: right;
+        }
+        .receipt-amount {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #28a745;
+        }
+        .receipt-status-approved {
+            color: #28a745;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .receipt-status-declined {
+            color: #dc3545;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .receipt-footer {
+            text-align: center;
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 2px dashed #1f77b4;
+            color: #6c757d;
+        }
+        .receipt-transaction-info {
+            background: #e7f3ff;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            border-left: 4px solid #1f77b4;
+        }
+        
+        /* Action Buttons */
+        .receipt-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 25px;
+            justify-content: center;
+        }
+        
+        /* Close Button */
+        .close-button {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        }
+        
         .success-box {
             border: 2px solid #28a745;
             background-color: #d4edda;
             color: #155724;
+        }
+        .warning-box {
+            border: 2px solid #ffc107;
+            background-color: #fff3cd;
+            color: #856404;
         }
         .error-box {
             border: 2px solid #dc3545;
@@ -115,7 +260,31 @@ class StreamlitForceSaleClient:
             margin: 10px 0;
             background-color: #fff3cd;
         }
+        .demo-banner {
+            background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            margin: 10px 0;
+        }
+        
+        /* Blur background when modal is open */
+        .main-content.blur {
+            filter: blur(5px);
+            pointer-events: none;
+        }
         </style>
+        """, unsafe_allow_html=True)
+
+    def render_protocol_info(self):
+        """Display protocol information"""
+        st.markdown(f"""
+        <div style="text-align: center;">
+            <div class="protocol-badge">🔒 {self.PROTOCOL_CONFIG['name']}</div>
+            <p><strong>Standard:</strong> {self.PROTOCOL_CONFIG['standard']} | 
+            <strong>Transaction Type:</strong> {self.PROTOCOL_CONFIG['transaction_type']}</p>
+        </div>
         """, unsafe_allow_html=True)
 
     def render_certificate_upload(self):
@@ -231,12 +400,15 @@ class StreamlitForceSaleClient:
                     
                 if st.button("📋 Transaction History"):
                     self.show_transaction_history()
+                    
+                if st.button("🎮 Process Demo"):
+                    self.process_demo_transaction()
             else:
                 st.warning("⚠️ Please upload certificates to continue")
 
     def render_demo_mode(self):
         """Render demo mode when certificates aren't available"""
-        st.warning("🔒 DEMO MODE - Certificates not configured")
+        st.markdown('<div class="demo-banner">🎮 DEMO MODE - Certificate Required for Live Transactions</div>', unsafe_allow_html=True)
         
         st.info("""
         **To enable live transactions:**
@@ -252,34 +424,43 @@ class StreamlitForceSaleClient:
         """)
         
         # Demo transaction button
-        if st.button("🎮 Process Demo Transaction", type="secondary"):
+        if st.button("🎮 Process Demo Transaction", type="secondary", use_container_width=True):
             self.process_demo_transaction()
 
     def process_demo_transaction(self):
         """Process a demo transaction for testing"""
         st.info("🔄 Processing demo transaction...")
         
+        # Generate demo transition IDs
+        demo_stan = str(st.session_state.stan_counter).zfill(6)
+        demo_rrn = demo_stan + "FSL"
+        st.session_state.stan_counter += 1
+        
         # Simulate processing delay
         with st.spinner("Processing payment..."):
             time.sleep(2)
         
-        # Demo result
+        # Demo result - clean user-friendly messages
         st.success("✅ Demo Payment Approved!")
         
-        # Create demo receipt
+        # Create demo receipt data
         demo_data = {
             'card_input': '4111111111111111',
             'expiry_input': '1225',
             'amount': 25.00,
-            'approval_input': '1234',
-            'merchant_name': 'Demo Store'
+            'approval_input': '123456',
+            'merchant_name': 'Demo Electronics Store'
         }
         
         demo_result = {
-            'response_message': 'APPROVED - Demo Transaction',
-            'approval_code': 'DEMO',
-            'full_auth_code': '123456',
-            'response_code': '00'
+            'response_message': 'APPROVED',
+            'approval_code': 'DEMO123',
+            'auth_code': '123456',
+            'response_code': '00',
+            'systems_trace_number': demo_stan,
+            'retrieval_reference_number': demo_rrn,
+            'protocol': self.PROTOCOL_CONFIG['name'],
+            'transaction_type': 'Force Sale'
         }
         
         # Add to transaction history
@@ -287,29 +468,28 @@ class StreamlitForceSaleClient:
             'timestamp': datetime.now(),
             'amount': demo_data['amount'],
             'card': self.format_card_display(demo_data['card_input']),
-            'status': demo_result['response_message'],
-            'approval_code': demo_result['approval_code'],
-            'response_code': demo_result['response_code'],
+            'status': 'APPROVED',
+            'approval_code': 'DEMO123',
+            'response_code': '00',
+            'stan': demo_stan,
+            'rrn': demo_rrn,
             'demo': True
         }
         st.session_state.transaction_history.append(transaction_record)
         
-        # Show receipt
-        self.show_receipt(demo_data, demo_result)
-
-    # [Keep all the previous methods from the original implementation]
-    # validate_card_number, validate_expiry_date, format_card_display, 
-    # format_expiry_display, create_ssl_context, connect_to_server,
-    # build_force_sale_message, parse_visa_response, send_transaction,
-    # process_payment, handle_transaction_result, show_receipt, 
-    # generate_receipt_text, disconnect, test_connection, 
-    # show_transaction_history, render_main_header, render_payment_form, 
-    # validate_form_inputs
+        # Store receipt data for popup
+        st.session_state.current_receipt_data = {
+            'form_data': demo_data,
+            'result': demo_result
+        }
+        st.session_state.show_receipt = True
+        st.rerun()
 
     def render_main_header(self):
-        """Render main header"""
+        """Render main header with protocol info"""
         st.markdown('<div class="main-header">💳 Professional Payment Terminal</div>', 
                    unsafe_allow_html=True)
+        self.render_protocol_info()
         st.markdown("---")
 
     def validate_card_number(self, card_input: str) -> Tuple[bool, str]:
@@ -335,6 +515,15 @@ class StreamlitForceSaleClient:
         if month < 1 or month > 12:
             return False, "Month must be between 01 and 12"
         
+        # Check if card is expired
+        current_year = datetime.now().year % 100
+        current_month = datetime.now().month
+        expiry_month = int(clean_expiry[:2])
+        expiry_year = int(clean_expiry[2:])
+        
+        if expiry_year < current_year or (expiry_year == current_year and expiry_month < current_month):
+            return False, "Card has expired"
+        
         return True, clean_expiry
 
     def render_payment_form(self):
@@ -348,14 +537,16 @@ class StreamlitForceSaleClient:
             card_input = st.text_input(
                 "💳 Card Number (16 digits)",
                 placeholder="4111 1111 1111 1111",
-                help="Enter the 16-digit card number"
+                help="Enter the 16-digit card number",
+                max_chars=19
             )
             
             # Expiry Date
             expiry_input = st.text_input(
                 "📅 Expiry Date (MMYY)",
                 placeholder="1225",
-                help="Enter expiry date as MMYY (e.g., 1225 for December 2025)"
+                help="Enter expiry date as MMYY (e.g., 1225 for December 2025)",
+                max_chars=4
             )
             
         with col2:
@@ -370,16 +561,18 @@ class StreamlitForceSaleClient:
             
             # Approval Code
             approval_input = st.text_input(
-                "✅ Approval Code (4 digits)",
-                placeholder="1234",
-                help="Force Sale requires a 4-digit approval code"
+                "✅ Approval Code (6 digits)",
+                placeholder="123456",
+                help="Force Sale requires a 6-digit approval code",
+                max_chars=6
             )
             
             # Merchant Name
             merchant_name = st.text_input(
                 "🏪 Merchant Name",
-                value="Your Store",
-                help="Business name for receipt"
+                value="Your Store Name",
+                help="Business name for receipt",
+                max_chars=40
             )
         
         return {
@@ -395,38 +588,50 @@ class StreamlitForceSaleClient:
         errors = []
         
         # Validate card
-        if form_data['card_input']:
+        if not form_data['card_input']:
+            errors.append("Card number is required")
+        else:
             valid, message = self.validate_card_number(form_data['card_input'])
             if not valid:
                 errors.append(f"Card: {message}")
-        else:
-            errors.append("Card number is required")
-            
+                
         # Validate expiry
-        if form_data['expiry_input']:
+        if not form_data['expiry_input']:
+            errors.append("Expiry date is required")
+        else:
             valid, message = self.validate_expiry_date(form_data['expiry_input'])
             if not valid:
                 errors.append(f"Expiry: {message}")
-        else:
-            errors.append("Expiry date is required")
             
         # Validate approval code
         if not form_data['approval_input']:
             errors.append("Approval code is required")
-        elif len(form_data['approval_input']) != 4 or not form_data['approval_input'].isdigit():
-            errors.append("Approval code must be 4 digits")
+        elif len(form_data['approval_input']) != 6 or not form_data['approval_input'].isdigit():
+            errors.append("Approval code must be 6 digits")
+            
+        # Validate amount
+        if form_data['amount'] <= 0:
+            errors.append("Amount must be greater than 0")
+            
+        # Validate merchant name
+        if not form_data['merchant_name'] or len(form_data['merchant_name'].strip()) < 2:
+            errors.append("Valid merchant name is required")
             
         return errors
 
     def format_card_display(self, pan: str) -> str:
         """Format card for display"""
         clean_pan = re.sub(r'\D', '', pan)
-        return f"{clean_pan[:4]} {clean_pan[4:8]} {clean_pan[8:12]} {clean_pan[12:16]}"
+        if len(clean_pan) == 16:
+            return f"{clean_pan[:4]} {clean_pan[4:8]} {clean_pan[8:12]} {clean_pan[12:16]}"
+        return clean_pan
 
     def format_expiry_display(self, expiry: str) -> str:
         """Format expiry for display"""
         clean_expiry = re.sub(r'\D', '', expiry)
-        return f"{clean_expiry[:2]}/{clean_expiry[2:4]}"
+        if len(clean_expiry) == 4:
+            return f"{clean_expiry[:2]}/{clean_expiry[2:4]}"
+        return clean_expiry
 
     def create_ssl_context(self):
         """Create SSL context"""
@@ -457,7 +662,7 @@ class StreamlitForceSaleClient:
                 server_hostname=server['host']
             )
             
-            self.connection.settimeout(10)
+            self.connection.settimeout(30)
             self.connection.connect((server['host'], server['port']))
             
             return "Connected successfully", True
@@ -466,53 +671,81 @@ class StreamlitForceSaleClient:
             return f"Connection failed: {e}", False
 
     def build_force_sale_message(self, pan: str, amount: float, expiry: str, approval_code: str, merchant_name: str):
-        """Build Force Sale ISO message"""
+        """Build Force Sale ISO message with Visa Base I protocol"""
+        # Generate transition identifiers
         stan = str(st.session_state.stan_counter).zfill(6)
         st.session_state.stan_counter += 1
+        
+        # RRN (Retrieval Reference Number) - Critical for transaction tracking
+        rrn = stan + "FSL"  # FSL indicates Force Sale
         
         now = datetime.now()
         transmission_time = now.strftime("%m%d%H%M%S")
         local_time = now.strftime("%H%M%S")
         local_date = now.strftime("%m%d")
         
-        # Store transaction data
+        # Store transaction data with protocol info
         st.session_state.last_transaction = {
             "pan": pan,
             "expiry": expiry,
             "amount": amount,
             "stan": stan,
+            "rrn": rrn,
             "type": "Force Sale",
             "merchant_name": merchant_name,
             "timestamp": datetime.now(),
-            "approval_code": approval_code
+            "approval_code": approval_code,
+            "protocol": self.PROTOCOL_CONFIG['name'],
+            "mti": self.PROTOCOL_CONFIG['mti_request']
         }
 
-        # ISO 8583 data elements
+        # ISO 8583 data elements for Visa Base I Force Sale
         data_elements = {
+            # Primary Account Number
             2: pan,
-            3: "000000",
+            # Processing Code (000000 for Force Sale)
+            3: self.PROTOCOL_CONFIG['processing_code'],
+            # Amount, Transaction
             4: str(int(amount * 100)).zfill(12),
+            # Transmission Date & Time
             7: transmission_time,
+            # STAN (Systems Trace Audit Number) - TRANSITION ID
             11: stan,
+            # Local Time (HHMMSS)
             12: local_time,
+            # Local Date (MMDD)
             13: local_date,
+            # Expiration Date (YYMM)
             14: expiry,
-            18: "5999",
-            22: "012",
-            24: "200",
-            25: "08",
+            # Merchant Type
+            18: "5999",  # Miscellaneous stores
+            # Point of Service Entry Mode
+            22: "012",   # Manual key entry
+            # Function Code (200 for Force Sale)
+            24: self.PROTOCOL_CONFIG['function_code'],
+            # POS Condition Code
+            25: "08",    # Manual, no terminal
+            # Acquiring Institution ID
             32: "00000000001",
+            # Track 2 Data
             35: pan + "=" + expiry + "100",
-            37: stan + "FSL",
+            # RRN (Retrieval Reference Number) - TRANSITION ID
+            37: rrn,
+            # Authorization Code
             38: approval_code,
+            # Terminal ID
             41: st.session_state.terminal_id,
+            # Merchant ID
             42: st.session_state.merchant_id,
-            43: merchant_name.ljust(16)[:16],
+            # Card Acceptor Name/Location
+            43: merchant_name.ljust(40)[:40],  # Increased length for better merchant names
+            # Currency Code (USD)
             49: "840",
+            # Additional Data - Visa Specific (00108001 = Force Sale)
             60: "00108001",
         }
 
-        # Build bitmap
+        # Build bitmap (indicates which fields are present)
         bitmap = bytearray(8)
         for field_num in data_elements.keys():
             if 1 <= field_num <= 64:
@@ -520,18 +753,22 @@ class StreamlitForceSaleClient:
                 bit_index = 7 - ((field_num - 1) % 8)
                 bitmap[byte_index] |= (1 << bit_index)
 
-        mti = "0200"
+        # MTI for Authorization Request
+        mti = self.PROTOCOL_CONFIG['mti_request']
         bitmap_hex = bitmap.hex().upper()
 
-        # Build data string
+        # Build data string with proper field formatting
         data_str = ""
         for field_num in sorted(data_elements.keys()):
             value = data_elements[field_num]
-            if field_num in [2, 32, 35]:
+            # LLVAR and LLLVAR fields
+            if field_num in [2, 35]:  # LLVAR fields
                 data_str += f"{len(value):02d}{value}"
-            elif field_num in [60]:
+            elif field_num in [32]:   # LLVAR field
+                data_str += f"{len(value):02d}{value}"
+            elif field_num in [60]:   # LLLVAR field
                 data_str += f"{len(value):03d}{value}"
-            else:
+            else:  # Fixed length fields
                 data_str += value
 
         iso_message = mti + bitmap_hex + data_str
@@ -540,12 +777,27 @@ class StreamlitForceSaleClient:
         
         return length_prefix + iso_message.encode('ascii')
 
+    def extract_field(self, response_str: str, field_num: int, max_length: int) -> str:
+        """Extract specific field from ISO response"""
+        try:
+            # Simple field extraction
+            field_str = str(field_num)
+            idx = response_str.find(field_str)
+            if idx != -1:
+                # Move past the field number
+                value_start = idx + len(field_str)
+                return response_str[value_start:value_start + max_length]
+        except:
+            pass
+        return ""
+
     def parse_visa_response(self, response: bytes) -> Dict[str, Any]:
-        """Parse Visa response"""
+        """Parse Visa Base I response with clean output"""
         try:
             if len(response) < 4:
                 return {"error": "Response too short"}
                 
+            # Check for length prefix
             if len(response) > 2:
                 potential_length = struct.unpack('>H', response[:2])[0]
                 if potential_length == len(response) - 2:
@@ -555,40 +807,47 @@ class StreamlitForceSaleClient:
             
             result = {
                 "mti": response_str[0:4] if len(response_str) >= 4 else "",
-                "length": len(response)
+                "length": len(response),
+                "protocol": self.PROTOCOL_CONFIG['name'],
+                "transaction_type": "Force Sale"
             }
             
-            # Visa response codes
+            # Visa Base I response codes with clean messages
             visa_codes = {
-                '00': 'APPROVED - Force Sale Completed',
+                '00': 'APPROVED',
                 '01': 'REFER TO ISSUER', 
-                '05': 'DECLINED - Do Not Honor',
-                '12': 'ERROR - Invalid Transaction',
-                '13': 'ERROR - Invalid Amount',
-                '14': 'ERROR - Invalid Card',
-                '51': 'DECLINED - Insufficient Funds',
-                '54': 'ERROR - Expired Card',
-                '91': 'UNAVAILABLE - Issuer Unavailable',
-                '96': 'ERROR - System Malfunction'
+                '05': 'DECLINED',
+                '12': 'INVALID TRANSACTION',
+                '13': 'INVALID AMOUNT',
+                '14': 'INVALID CARD',
+                '51': 'INSUFFICIENT FUNDS',
+                '54': 'EXPIRED CARD',
+                '55': 'INCORRECT PIN',
+                '91': 'ISSUER UNAVAILABLE',
+                '96': 'SYSTEM MALFUNCTION'
             }
             
-            # Extract response code
-            if "39" in response_str:
-                idx = response_str.find("39")
-                if idx + 2 < len(response_str):
-                    resp_code = response_str[idx+2:idx+4]
-                    result["response_code"] = resp_code
-                    result["response_message"] = visa_codes.get(resp_code, "UNKNOWN")
+            # Extract response code (Field 39)
+            response_code = self.extract_field(response_str, 39, 2)
+            if response_code:
+                result["response_code"] = response_code
+                result["response_message"] = visa_codes.get(response_code, f"RESPONSE CODE: {response_code}")
             
-            # Extract auth code
-            if "38" in response_str:
-                idx = response_str.find("38")
-                if idx + 2 < len(response_str):
-                    auth_code = response_str[idx+2:idx+8]
-                    result["auth_code"] = auth_code
-                    if len(auth_code) >= 4:
-                        result["approval_code"] = auth_code[:4]
-                        result["full_auth_code"] = auth_code
+            # Extract auth code (Field 38)
+            auth_code = self.extract_field(response_str, 38, 6)
+            if auth_code:
+                result["auth_code"] = auth_code
+                result["approval_code"] = auth_code  # Use full 6-digit code for display
+        
+            # Extract RRN (Field 37) - Transaction tracking
+            rrn = self.extract_field(response_str, 37, 12)
+            if rrn:
+                result["retrieval_reference_number"] = rrn
+            
+            # Extract STAN (Field 11)
+            stan = self.extract_field(response_str, 11, 6)
+            if stan:
+                result["systems_trace_number"] = stan
             
             return result
             
@@ -608,8 +867,10 @@ class StreamlitForceSaleClient:
             if response:
                 return self.parse_visa_response(response)
             else:
-                return {"error": "No response"}
+                return {"error": "No response from server"}
                 
+        except socket.timeout:
+            return {"error": "Connection timeout - no response from server"}
         except Exception as e:
             return {"error": f"Send failed: {e}"}
 
@@ -619,7 +880,7 @@ class StreamlitForceSaleClient:
         errors = self.validate_form_inputs(form_data)
         if errors:
             for error in errors:
-                st.error(error)
+                st.error(f"❌ {error}")
             return
         
         # Check certificates
@@ -630,8 +891,12 @@ class StreamlitForceSaleClient:
             return
         
         # Clean inputs
-        clean_card, _ = self.validate_card_number(form_data['card_input'])
-        clean_expiry, _ = self.validate_expiry_date(form_data['expiry_input'])
+        card_valid, clean_card = self.validate_card_number(form_data['card_input'])
+        expiry_valid, clean_expiry = self.validate_expiry_date(form_data['expiry_input'])
+        
+        if not card_valid or not expiry_valid:
+            st.error("❌ Invalid card data")
+            return
         
         # Build message
         with st.spinner("🔄 Building transaction message..."):
@@ -647,7 +912,7 @@ class StreamlitForceSaleClient:
         with st.spinner("🔗 Connecting to payment server..."):
             connection_result, success = self.connect_to_server()
             if not success:
-                st.error(f"Connection failed: {connection_result}")
+                st.error(f"❌ Connection failed: {connection_result}")
                 return
         
         # Send transaction
@@ -659,105 +924,191 @@ class StreamlitForceSaleClient:
         self.handle_transaction_result(result, form_data)
 
     def handle_transaction_result(self, result, form_data):
-        """Handle transaction result"""
+        """Handle transaction result with clean output"""
         if 'error' in result:
             st.error(f"❌ Transaction failed: {result['error']}")
         else:
-            st.success("✅ Payment Approved!")
+            # Clean success message
+            if result.get('response_code') == '00':
+                st.success("✅ Payment Approved Successfully!")
+            else:
+                st.warning(f"⚠️ {result.get('response_message', 'Transaction processed')}")
+            
+            # Get transition IDs from result or generate them
+            stan = result.get('systems_trace_number', 
+                             st.session_state.last_transaction.get('stan', 'N/A') if st.session_state.last_transaction else 'N/A')
+            rrn = result.get('retrieval_reference_number', 
+                            st.session_state.last_transaction.get('rrn', 'N/A') if st.session_state.last_transaction else 'N/A')
             
             # Add to transaction history
             transaction_record = {
                 'timestamp': datetime.now(),
                 'amount': form_data['amount'],
                 'card': self.format_card_display(form_data['card_input']),
-                'status': result.get('response_message', 'Unknown'),
-                'approval_code': result.get('approval_code', 'N/A'),
+                'status': result.get('response_message', 'PROCESSED'),
+                'approval_code': result.get('approval_code', result.get('auth_code', 'N/A')),
                 'response_code': result.get('response_code', 'N/A'),
+                'stan': stan,
+                'rrn': rrn,
                 'demo': False
             }
             st.session_state.transaction_history.append(transaction_record)
             
-            # Show receipt
-            self.show_receipt(form_data, result)
+            # Store receipt data for popup
+            st.session_state.current_receipt_data = {
+                'form_data': form_data,
+                'result': result
+            }
+            st.session_state.show_receipt = True
+            st.rerun()
 
-    def show_receipt(self, form_data, result):
-        """Show payment receipt"""
-        st.markdown("---")
-        st.header("🧾 Payment Receipt")
+    def show_receipt_modal(self):
+        """Show receipt in a modal popup"""
+        if not st.session_state.show_receipt or not st.session_state.current_receipt_data:
+            return
+            
+        form_data = st.session_state.current_receipt_data['form_data']
+        result = st.session_state.current_receipt_data['result']
         
-        receipt_html = f"""
-        <div class="receipt-box success-box">
-            <h3 style="text-align: center; margin-bottom: 20px;">FORCE SALE RECEIPT</h3>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Merchant:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{form_data['merchant_name']}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Terminal ID:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.terminal_id}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Card Number:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{self.format_card_display(form_data['card_input'])}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Amount:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">${form_data['amount']:.2f}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Date/Time:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Status:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('response_message', 'Unknown')}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Approval Code:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('approval_code', 'N/A')}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Auth Code:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('full_auth_code', 'N/A')}</td>
-            </tr>
-            </table>
-            
-            <p style="text-align: center; margin-top: 20px; font-weight: bold;">THANK YOU FOR YOUR BUSINESS</p>
+        # Get transition IDs
+        stan = result.get('systems_trace_number', 
+                         st.session_state.last_transaction.get('stan', 'N/A') if st.session_state.last_transaction else 'N/A')
+        rrn = result.get('retrieval_reference_number', 
+                        st.session_state.last_transaction.get('rrn', 'N/A') if st.session_state.last_transaction else 'N/A')
+        protocol = result.get('protocol', self.PROTOCOL_CONFIG['name'])
+        
+        # Determine status and styling
+        status_message = result.get('response_message', 'PROCESSED')
+        is_approved = 'APPROVED' in status_message.upper() or (result.get('response_code') == '00')
+        status_class = "receipt-status-approved" if is_approved else "receipt-status-declined"
+        status_display = "✅ APPROVED" if is_approved else "❌ DECLINED"
+        
+        # Create modal with receipt
+        modal_html = f"""
+        <div class="modal-overlay">
+            <div class="modal-content">
+                <button class="close-button" onclick="window.closeModal()">×</button>
+                <div class="receipt-container">
+                    <div class="receipt-header">
+                        <div class="receipt-merchant">{form_data['merchant_name']}</div>
+                        <div class="receipt-title">PAYMENT RECEIPT</div>
+                        <div style="color: #6c757d; font-size: 0.9em;">{protocol} Transaction</div>
+                    </div>
+                    
+                    <table class="receipt-details">
+                        <tr>
+                            <td class="receipt-label">Transaction Type:</td>
+                            <td class="receipt-value">FORCE SALE</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Card Number:</td>
+                            <td class="receipt-value">{self.format_card_display(form_data['card_input'])}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Amount:</td>
+                            <td class="receipt-value receipt-amount">${form_data['amount']:.2f}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Date/Time:</td>
+                            <td class="receipt-value">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Status:</td>
+                            <td class="receipt-value {status_class}">{status_display}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Approval Code:</td>
+                            <td class="receipt-value">{result.get('approval_code', result.get('auth_code', 'N/A'))}</td>
+                        </tr>
+                        <tr>
+                            <td class="receipt-label">Terminal ID:</td>
+                            <td class="receipt-value">{st.session_state.terminal_id}</td>
+                        </tr>
+                    </table>
+                    
+                    <div class="receipt-transaction-info">
+                        <strong>Transaction References:</strong><br>
+                        • <strong>Reference Number:</strong> {rrn}<br>
+                        • <strong>Trace Number:</strong> {stan}<br>
+                        • <strong>Processing Network:</strong> {protocol}
+                    </div>
+                    
+                    <div class="receipt-footer">
+                        <strong>Thank you for your business! 💝</strong><br>
+                        <small>This receipt is proof of your transaction</small>
+                    </div>
+                </div>
+            </div>
         </div>
+        
+        <script>
+        function closeModal() {{
+            // This will trigger a Streamlit rerun with show_receipt = false
+            window.parent.postMessage({{'type': 'streamlit:setComponentValue', 'value': 'close_receipt'}}, '*');
+        }}
+        
+        // Close modal when clicking outside
+        document.addEventListener('click', function(event) {{
+            if (event.target.classList.contains('modal-overlay')) {{
+                closeModal();
+            }}
+        }});
+        
+        // Close modal with Escape key
+        document.addEventListener('keydown', function(event) {{
+            if (event.key === 'Escape') {{
+                closeModal();
+            }}
+        }});
+        </script>
         """
         
-        st.markdown(receipt_html, unsafe_allow_html=True)
+        # Display the modal
+        st.components.v1.html(modal_html, height=800)
         
-        # Download button
-        receipt_text = self.generate_receipt_text(form_data, result)
-        st.download_button(
-            label="📄 Download Receipt",
-            data=receipt_text,
-            file_name=f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain"
-        )
+        # Action buttons below the modal
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown('<div class="receipt-actions">', unsafe_allow_html=True)
+            
+            # Download button
+            receipt_text = self.generate_receipt_text(form_data, result, stan, rrn, protocol, status_display)
+            st.download_button(
+                label="📄 Download Receipt",
+                data=receipt_text,
+                file_name=f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+            
+            # Close button
+            if st.button("🔄 New Transaction", use_container_width=True, key="new_transaction"):
+                st.session_state.show_receipt = False
+                st.session_state.current_receipt_data = None
+                st.rerun()
+            
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    def generate_receipt_text(self, form_data, result):
-        """Generate receipt text for download"""
+    def generate_receipt_text(self, form_data, result, stan, rrn, protocol, status_display):
+        """Generate clean receipt text for download"""
         return f"""
-FORCE SALE RECEIPT
-==================
+PAYMENT RECEIPT
+{'=' * 50}
 Merchant: {form_data['merchant_name']}
-Terminal ID: {st.session_state.terminal_id}
-Merchant ID: {st.session_state.merchant_id}
-------------------
+Terminal: {st.session_state.terminal_id}
+Transaction: FORCE SALE
+{'=' * 50}
 Card: {self.format_card_display(form_data['card_input'])}
-Expiry: {self.format_expiry_display(form_data['expiry_input'])}
 Amount: ${form_data['amount']:.2f}
 Date/Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Status: {result.get('response_message', 'Unknown')}
-Approval Code: {result.get('approval_code', 'N/A')}
-Auth Code: {result.get('full_auth_code', 'N/A')}
-Response Code: {result.get('response_code', 'N/A')}
-==================
-THANK YOU FOR YOUR BUSINESS
+Status: {status_display.replace('✅ ', '').replace('❌ ', '').replace('⚠️ ', '')}
+Approval: {result.get('approval_code', result.get('auth_code', 'N/A'))}
+{'=' * 50}
+REFERENCE: {rrn}
+TRACE: {stan}
+NETWORK: {protocol}
+{'=' * 50}
+Thank you for your business!
 """
 
     def disconnect(self):
@@ -776,7 +1127,7 @@ THANK YOU FOR YOUR BUSINESS
             st.error(f"❌ {cert_message}")
             return
             
-        with st.spinner("Testing connection..."):
+        with st.spinner("Testing connection to payment server..."):
             result, success = self.connect_to_server()
             if success:
                 st.success("✅ Connection successful!")
@@ -791,15 +1142,30 @@ THANK YOU FOR YOUR BUSINESS
         if not st.session_state.transaction_history:
             st.info("No transactions yet")
             return
+        
+        # Show last 10 transactions
+        recent_transactions = list(reversed(st.session_state.transaction_history[-10:]))
+        
+        for i, transaction in enumerate(recent_transactions, 1):
+            demo_indicator = " 🎮" if transaction.get('demo', False) else ""
+            status_icon = "✅" if transaction['status'] == 'APPROVED' else "⚠️"
             
-        for i, transaction in enumerate(reversed(st.session_state.transaction_history[-10:]), 1):
-            demo_indicator = " (Demo)" if transaction.get('demo', False) else ""
-            with st.expander(f"Transaction {i} - ${transaction['amount']:.2f} - {transaction['timestamp'].strftime('%H:%M:%S')}{demo_indicator}"):
-                st.write(f"**Card:** {transaction['card']}")
-                st.write(f"**Amount:** ${transaction['amount']:.2f}")
-                st.write(f"**Status:** {transaction['status']}")
-                st.write(f"**Approval Code:** {transaction['approval_code']}")
-                st.write(f"**Time:** {transaction['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+            with st.expander(f"{status_icon} Transaction {i} - ${transaction['amount']:.2f} - {transaction['timestamp'].strftime('%H:%M:%S')}{demo_indicator}"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Card:** {transaction['card']}")
+                    st.write(f"**Amount:** ${transaction['amount']:.2f}")
+                    st.write(f"**Status:** {transaction['status']}")
+                    
+                with col2:
+                    st.write(f"**Approval Code:** {transaction['approval_code']}")
+                    st.write(f"**Reference:** {transaction.get('rrn', 'N/A')}")
+                    st.write(f"**Time:** {transaction['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                if st.button(f"Delete Transaction {i}", key=f"delete_{i}"):
+                    st.session_state.transaction_history.remove(transaction)
+                    st.rerun()
 
     def run(self):
         """Main application runner"""
@@ -807,20 +1173,24 @@ THANK YOU FOR YOUR BUSINESS
         self.render_sidebar()
         self.render_main_header()
         
-        # Check if certificates are ready
-        cert_valid, _ = self.check_certificates()
-        
-        if not cert_valid and not st.session_state.cert_files_uploaded:
-            self.render_demo_mode()
+        # Show receipt modal if needed
+        if st.session_state.show_receipt:
+            self.show_receipt_modal()
         else:
-            # Payment form
-            form_data = self.render_payment_form()
+            # Check if certificates are ready
+            cert_valid, _ = self.check_certificates()
             
-            # Process payment button
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
-                    self.process_payment(form_data)
+            if not cert_valid and not st.session_state.cert_files_uploaded:
+                self.render_demo_mode()
+            else:
+                # Payment form
+                form_data = self.render_payment_form()
+                
+                # Process payment button
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
+                        self.process_payment(form_data)
 
 def main():
     """Main function"""
