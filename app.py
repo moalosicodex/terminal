@@ -1,200 +1,402 @@
+#!/usr/bin/env python3
+"""
+Professional Payment Terminal - Full app with masked PDF receipts
+Requirements: streamlit, reportlab
+pip install streamlit reportlab
+"""
 import streamlit as st
-import ssl
-import os
 import socket
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.poolmanager import PoolManager
+import ssl
+import struct
+import os
+import re
 from datetime import datetime
-from pathlib import Path
+import time
+import hashlib
+from typing import Tuple, Dict, Any
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
-# ==============================================================
-# === PASSWORD PROTECTION ===
-# ==============================================================
+# === PASSWORD PROTECTION === 
+APP_PASSWORD_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # password: password
 
-# Simple password auth (you can replace with secrets or DB later)
-def check_password():
-    def password_entered():
-        if st.session_state["password"] == st.secrets.get("APP_PASSWORD", "admin123"):
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🔒 Payment Terminal")
+    password = st.text_input("Enter Password", type="password")
+    if st.button("Access System"):
+        if hashlib.sha256(password.encode()).hexdigest() == APP_PASSWORD_HASH:
+            st.session_state.authenticated = True
+            st.rerun()
         else:
-            st.session_state["password_correct"] = False
+            st.error("Incorrect password")
+    st.stop()
+# === END PASSWORD PROTECTION ===
 
-    if "password_correct" not in st.session_state:
-        st.text_input("🔐 Enter Password", type="password", on_change=password_entered, key="password")
-        st.stop()
-    elif not st.session_state["password_correct"]:
-        st.text_input("🔐 Enter Password", type="password", on_change=password_entered, key="password")
-        st.error("❌ Incorrect password. Please try again.")
-        st.stop()
+# ---------------------- Helper functions ----------------------
+def mask_pan_for_display(pan: str) -> str:
+    """Return masked PAN for display: 4 + ' **** **** ' + last4"""
+    clean = re.sub(r'\D', '', pan)
+    if len(clean) >= 8:
+        return f"{clean[:4]} **** **** {clean[-4:]}"
+    if len(clean) >= 4:
+        return f"{clean[:4]} ****"
+    return clean
 
-# ==============================================================
-# === CUSTOM HTTPS ADAPTER ===
-# ==============================================================
+def build_iso8583_force_sale(pan: str, expiry: str, amount: float, approval_code: str, stan: int, merchant_name: str):
+    """
+    Build a simple Visa Base I Force Sale-like message.
+    Returns: bytes message with 2-byte length prefix, plus stan and rrn.
+    """
+    mti = "0200"
+    rrn = f"{str(stan).zfill(6)}FSL"
+    now = datetime.now()
+    transmission_time = now.strftime("%m%d%H%M%S")
+    local_time = now.strftime("%H%M%S")
+    local_date = now.strftime("%m%d")
 
-class SSLAdapter(HTTPAdapter):
-    """Custom HTTPS adapter using a provided SSLContext."""
-
-    def __init__(self, ssl_context=None, **kwargs):
-        self.ssl_context = ssl_context
-        super().__init__(**kwargs)
-
-    def init_poolmanager(self, *args, **kwargs):
-        kwargs["ssl_context"] = self.ssl_context
-        return super().init_poolmanager(*args, **kwargs)
-
-    def proxy_manager_for(self, *args, **kwargs):
-        kwargs["ssl_context"] = self.ssl_context
-        return super().proxy_manager_for(*args, **kwargs)
-
-# ==============================================================
-# === PAYMENT CLIENT CLASS ===
-# ==============================================================
-
-class PaymentClient:
-    def __init__(self, base_url: str):
-        self.BASE_DIR = Path(__file__).resolve().parent
-        self.CERT_DIR = self.BASE_DIR / "certs"
-        os.makedirs(self.CERT_DIR, exist_ok=True)
-
-        # Certificate paths
-        self.ROOT_CERT = self.CERT_DIR / "root.crt"
-        self.CAD_CERT = self.CERT_DIR / "cad.crt"
-        self.CLIENT_CERT = self.CERT_DIR / "client.crt"
-        self.CLIENT_KEY = self.CERT_DIR / "client.key"
-
-        # Base URL
-        self.SERVER_URL = base_url
-
-        # SSL setup
-        self.ssl_context, self.cert_status = self.create_ssl_context()
-
-        # HTTPS session
-        self.session = requests.Session()
-        if isinstance(self.ssl_context, ssl.SSLContext):
-            self.session.mount("https://", SSLAdapter(self.ssl_context))
-
-    # ------------------------------------------------------------
-    # Create SSL context
-    # ------------------------------------------------------------
-    def create_ssl_context(self):
-        """Creates SSL context trusting root.crt and cad.crt"""
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        context.verify_mode = ssl.CERT_REQUIRED
-        context.check_hostname = False
-
-        try:
-            # Combine CA certs into one file
-            ca_bundle_path = self.CERT_DIR / "ca_bundle.crt"
-            with open(ca_bundle_path, "w") as bundle:
-                if self.ROOT_CERT.exists():
-                    bundle.write(self.ROOT_CERT.read_text())
-                if self.CAD_CERT.exists():
-                    bundle.write(self.CAD_CERT.read_text())
-
-            # Load CA certificates
-            context.load_verify_locations(cafile=str(ca_bundle_path))
-
-            # Load optional client certs
-            if self.CLIENT_CERT.exists() and self.CLIENT_KEY.exists():
-                context.load_cert_chain(certfile=str(self.CLIENT_CERT), keyfile=str(self.CLIENT_KEY))
-
-            return context, True
-
-        except Exception as e:
-            return f"Certificate load error: {e}", False
-
-    # ------------------------------------------------------------
-    # Test server connection
-    # ------------------------------------------------------------
-    def test_connection(self):
-        """Test a secure GET request"""
-        try:
-            response = self.session.get(self.SERVER_URL, timeout=5, verify=False)
-            return f"✅ Connected to {self.SERVER_URL} (HTTP {response.status_code})"
-        except Exception as e:
-            return f"❌ Connection failed: {e}"
-
-# ==============================================================
-# === STREAMLIT UI ===
-# ==============================================================
-
-def main():
-    st.set_page_config(page_title="SSL Payment Client", page_icon="💳", layout="centered")
-
-    # Password protection
-    check_password()
-
-    st.title("💳 Secure Payment Client")
-    st.write("This tool allows you to test SSL-secured payment connections with uploaded CA certificates.")
-
-    # ------------------------------------------------------------
-    # Server selection
-    # ------------------------------------------------------------
-    st.sidebar.header("🌐 Server Configuration")
-    servers = {
-        "Server 1 (Main)": "https://102.163.40.20:8090",
-        "Server 2 (Backup)": "https://10.252.251.5:8080"
+    data_elements = {
+        2: pan,
+        3: "000000",
+        4: str(int(amount * 100)).zfill(12),
+        7: transmission_time,
+        11: str(stan).zfill(6),
+        12: local_time,
+        13: local_date,
+        14: expiry,
+        18: "5999",
+        22: "012",
+        24: "200",
+        25: "08",
+        32: "00000000001",
+        35: pan + "=" + expiry + "100",
+        37: rrn,
+        38: approval_code,
+        41: st.session_state.terminal_id,
+        42: st.session_state.merchant_id,
+        43: merchant_name.ljust(40)[:40],
+        49: "840",
+        60: "00108001"
     }
-    selected_server = st.sidebar.selectbox("Select server:", list(servers.keys()))
-    base_url = servers[selected_server]
 
-    st.sidebar.markdown("---")
+    # bitmap for fields 1-64
+    bitmap = bytearray(8)
+    for field_num in data_elements.keys():
+        if 1 <= field_num <= 64:
+            byte_index = (field_num - 1) // 8
+            bit_index = 7 - ((field_num - 1) % 8)
+            bitmap[byte_index] |= (1 << bit_index)
 
-    # ------------------------------------------------------------
-    # Certificate uploads
-    # ------------------------------------------------------------
-    st.sidebar.header("📄 Certificate Uploads")
+    bitmap_hex = bitmap.hex().upper()
+    data_str = ""
+    for field_num in sorted(data_elements.keys()):
+        val = data_elements[field_num]
+        # LLVAR fields
+        if field_num in [2, 32, 35]:
+            data_str += f"{len(val):02d}{val}"
+        elif field_num == 60:
+            data_str += f"{len(val):03d}{val}"
+        else:
+            data_str += val
 
-    root_file = st.sidebar.file_uploader("Root Certificate (root.crt)", type=["crt", "pem"], key="root")
-    cad_file = st.sidebar.file_uploader("Intermediate CA (cad.crt)", type=["crt", "pem"], key="cad")
-    client_cert_file = st.sidebar.file_uploader("Client Certificate (optional)", type=["crt", "pem"], key="client_cert")
-    client_key_file = st.sidebar.file_uploader("Client Key (optional)", type=["key", "pem"], key="client_key")
+    iso_message = mti + bitmap_hex + data_str
+    msg_bytes = iso_message.encode("ascii")
+    length_prefix = struct.pack(">H", len(msg_bytes))
+    return length_prefix + msg_bytes, str(stan).zfill(6), rrn
 
-    cert_dir = Path(__file__).resolve().parent / "certs"
-    os.makedirs(cert_dir, exist_ok=True)
+def parse_iso8583_response(resp: bytes) -> Dict[str, Any]:
+    """Parse minimal info from response: get field 39 (response code) and maybe auth code."""
+    out = {"response_code": None, "approval_code": None}
+    if not resp:
+        return out
+    # remove length prefix if present
+    if len(resp) > 2:
+        prefix = struct.unpack(">H", resp[:2])[0]
+        if prefix == len(resp) - 2:
+            resp = resp[2:]
+    s = resp.decode("ascii", errors="ignore")
+    # field 39 usually is two chars at a particular offset — simplistic approach:
+    # we look for '39' indicator in this simple format (not robust for all ISO messages).
+    # Best-effort: search for '39' as field number then next 2 chars.
+    idx = s.find("39")
+    if idx != -1 and len(s) >= idx + 2 + 2:
+        out["response_code"] = s[idx + 2: idx + 4]
+    # approval code field 38
+    idx38 = s.find("38")
+    if idx38 != -1 and len(s) >= idx38 + 2 + 6:
+        out["approval_code"] = s[idx38 + 2: idx38 + 8]
+    return out
 
-    if root_file:
-        (cert_dir / "root.crt").write_bytes(root_file.read())
-        st.sidebar.success("✅ Root CA uploaded")
+# ---------------------- Main Client Class ----------------------
+class StreamlitForceSaleClient:
+    def __init__(self):
+        # session state defaults
+        if 'merchant_id' not in st.session_state:
+            st.session_state.merchant_id = "000000000009020"
+        if 'terminal_id' not in st.session_state:
+            st.session_state.terminal_id = "72000716"
+        if 'stan_counter' not in st.session_state:
+            st.session_state.stan_counter = 100001
+        if 'transaction_history' not in st.session_state:
+            st.session_state.transaction_history = []
+        if 'cert_files_uploaded' not in st.session_state:
+            st.session_state.cert_files_uploaded = False
 
-    if cad_file:
-        (cert_dir / "cad.crt").write_bytes(cad_file.read())
-        st.sidebar.success("✅ Intermediate CA uploaded")
+        # Servers
+        self.SERVERS = {
+            "Primary": {"host": "102.163.40.20", "port": 8090},
+            "Secondary": {"host": "10.252.251.5", "port": 8080}
+        }
 
-    if client_cert_file:
-        (cert_dir / "client.crt").write_bytes(client_cert_file.read())
-        st.sidebar.info("ℹ️ Client certificate uploaded")
+        # Cert paths
+        self.CERT_DIR = "./certs"
+        os.makedirs(self.CERT_DIR, exist_ok=True)
+        self.CAD_CERT = os.path.join(self.CERT_DIR, "cad.crt")
+        self.ROOT_CERT = os.path.join(self.CERT_DIR, "root.crt")
+        self.CLIENT_KEY = os.path.join(self.CERT_DIR, "client.key")  # optional future
+        self.connection = None
 
-    if client_key_file:
-        (cert_dir / "client.key").write_bytes(client_key_file.read())
-        st.sidebar.info("ℹ️ Client key uploaded")
+    # ---- UI helpers ----
+    def setup_page(self):
+        st.set_page_config(page_title="Professional Payment Terminal", page_icon="💳", layout="wide")
 
-    # ------------------------------------------------------------
-    # Initialize client
-    # ------------------------------------------------------------
-    client = PaymentClient(base_url)
+    def render_sidebar(self):
+        st.sidebar.title("⚙️ Setup")
+        # server selection
+        server = st.sidebar.selectbox("Select Server", list(self.SERVERS.keys()), index=0)
+        st.session_state.selected_server = server
 
-    st.write("### 🧾 SSL Context Status")
-    if client.cert_status is True:
-        st.success("SSL context created successfully ✅")
-    else:
-        st.error(f"SSL initialization failed: {client.cert_status}")
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🔐 Certificates (upload)")
+        cad = st.sidebar.file_uploader("Intermediate CA (cad.crt)", type=["crt", "pem"], key="cad")
+        root = st.sidebar.file_uploader("Root CA (root.crt)", type=["crt", "pem"], key="root")
+        key = st.sidebar.file_uploader("Client Key (optional, client.key)", type=["key", "pem"], key="ckey")
 
-    # ------------------------------------------------------------
-    # Test connection
-    # ------------------------------------------------------------
-    if st.button("🔍 Test Server Connection"):
-        result = client.test_connection()
-        st.info(result)
+        if cad:
+            (open(self.CAD_CERT, "wb")).write(cad.getvalue())
+            st.sidebar.success("cad.crt saved")
+        if root:
+            (open(self.ROOT_CERT, "wb")).write(root.getvalue())
+            st.sidebar.success("root.crt saved")
+        if key:
+            (open(self.CLIENT_KEY, "wb")).write(key.getvalue())
+            st.sidebar.info("client.key saved (optional)")
 
-    st.markdown("---")
-    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if os.path.exists(self.CAD_CERT) and os.path.exists(self.ROOT_CERT):
+            st.sidebar.success("Certificates present")
+            st.session_state.cert_files_uploaded = True
+        else:
+            st.sidebar.warning("Please upload cad.crt and root.crt")
 
-# ==============================================================
-# === ENTRY POINT ===
-# ==============================================================
+        if st.sidebar.button("🔄 Test Connection"):
+            self.test_connection()
 
-if __name__ == "__main__":
-    main()
+    # ---- certificate/SSL helpers ----
+    def create_ssl_context(self) -> Tuple[Any, bool]:
+        """Create SSL context trusting root.crt; attempt to load cad.crt as cert (skip key if missing)."""
+        try:
+            if not os.path.exists(self.ROOT_CERT):
+                return "Root certificate missing", False
+            context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=self.ROOT_CERT)
+            # Attempt to load client cert; if key missing, load_cert_chain will raise — catch and skip
+            try:
+                if os.path.exists(self.CLIENT_KEY):
+                    context.load_cert_chain(certfile=self.CAD_CERT, keyfile=self.CLIENT_KEY)
+                else:
+                    # Try to load cad.crt alone; many libs require key for cert usage, this may fail — catch below
+                    context.load_cert_chain(certfile=self.CAD_CERT)
+            except Exception:
+                # skip client cert if private key is absent or incompatible
+                pass
+            context.check_hostname = False  # set True in production if CN/hostnames align
+            context.verify_mode = ssl.CERT_REQUIRED
+            return context, True
+        except Exception as e:
+            return f"SSL context error: {e}", False
+
+    def test_connection(self):
+        if not os.path.exists(self.ROOT_CERT):
+            st.error("root.crt is missing in ./certs")
+            return
+        ctx, ok = self.create_ssl_context()
+        if not ok:
+            st.error(ctx)
+            return
+        server_key = st.session_state.get("selected_server", "Primary")
+        server = self.SERVERS[server_key]
+        try:
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(10)
+            ssock = ctx.wrap_socket(raw, server_hostname=server["host"])
+            ssock.connect((server["host"], server["port"]))
+            ssock.close()
+            st.success(f"✅ Connected to {server['host']}:{server['port']}")
+        except Exception as e:
+            st.error(f"Connection failed: {e}")
+
+    # ---- ISO8583 send/receive ----
+    def connect_socket(self):
+        server_key = st.session_state.get("selected_server", "Primary")
+        server = self.SERVERS[server_key]
+        ctx, ok = self.create_ssl_context()
+        if not ok:
+            return None, f"SSL error: {ctx}"
+        try:
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(15)
+            ssock = ctx.wrap_socket(raw, server_hostname=server["host"])
+            ssock.settimeout(30)
+            ssock.connect((server["host"], server["port"]))
+            return ssock, None
+        except Exception as e:
+            return None, f"Connection failed: {e}"
+
+    def send_iso_message(self, msg: bytes) -> Tuple[bool, str, bytes]:
+        sock, err = self.connect_socket()
+        if not sock:
+            return False, err, b""
+        try:
+            sock.sendall(msg)
+            data = sock.recv(8192)
+            return True, "OK", data
+        except Exception as e:
+            return False, f"Send/recv failed: {e}", b""
+        finally:
+            try:
+                sock.close()
+            except:
+                pass
+
+    # ---- PDF generation ----
+    def generate_pdf_receipt(self, txn: Dict[str, Any]) -> BytesIO:
+        """Generate a printable PDF receipt with masked PAN."""
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        c.setFont("Helvetica-Bold", 16)
+        c.drawCentredString(width / 2, height - 50, "Payment Receipt")
+        c.setFont("Helvetica", 11)
+
+        y = height - 100
+        line_gap = 20
+
+        def draw(label, value):
+            nonlocal y
+            c.drawString(72, y, f"{label}: {value}")
+            y -= line_gap
+
+        masked = mask_pan_for_display(txn.get("pan", ""))
+
+        draw("Merchant", txn.get("merchant_name", "Your Store"))
+        draw("Terminal ID", st.session_state.terminal_id)
+        draw("Date/Time", txn.get("timestamp", datetime.now()).strftime("%Y-%m-%d %H:%M:%S"))
+        draw("Card", masked)
+        draw("Amount", f"${txn.get('amount', 0.0):.2f}")
+        draw("Approval Code", txn.get("approval_code", "N/A"))
+        draw("RRN", txn.get("rrn", "N/A"))
+        draw("Status", txn.get("status", "N/A"))
+
+        c.setFont("Helvetica-Oblique", 9)
+        c.drawCentredString(width / 2, 40, "Thank you for your business!")
+
+        c.showPage()
+        c.save()
+        buffer.seek(0)
+        return buffer
+
+    # ---- high-level transaction flow ----
+    def process_force_sale(self, pan: str, expiry: str, amount: float, approval_code: str, merchant_name: str):
+        # validate basic
+        if len(re.sub(r'\D', '', pan)) != 16:
+            return False, "PAN must be 16 digits", None
+        if len(re.sub(r'\D', '', expiry)) != 4:
+            return False, "Expiry must be MMYY (4 digits)", None
+        if len(approval_code) != 6 or not approval_code.isdigit():
+            return False, "Approval code must be 6 digits", None
+
+        stan = st.session_state.stan_counter
+        st.session_state.stan_counter += 1
+
+        msg, stan_str, rrn = build_iso8583_force_sale(pan, expiry, amount, approval_code, stan, merchant_name)
+        sent, status, data = self.send_iso_message(msg)
+        if not sent:
+            return False, status, (stan_str, rrn)
+
+        parsed = parse_iso8583_response(data)
+        rc = parsed.get("response_code")
+        approved = rc == "00" or rc is None and "APPROVED" in status.upper()
+        approval_code_from_resp = parsed.get("approval_code") or approval_code
+
+        status_text = "APPROVED" if approved else f"DECLINED ({rc})" if rc else "DECLINED"
+        txn = {
+            "timestamp": datetime.now(),
+            "merchant_name": merchant_name,
+            "pan": re.sub(r'\D', '', pan),
+            "amount": amount,
+            "approval_code": approval_code_from_resp,
+            "rrn": rrn,
+            "stan": stan_str,
+            "status": status_text
+        }
+        st.session_state.transaction_history.append(txn)
+
+        return True, status_text, txn
+
+    # ---- UI: Payment form & actions ----
+    def render_payment_form(self):
+        st.header("📝 Payment Details")
+        col1, col2 = st.columns(2)
+        with col1:
+            pan = st.text_input("💳 Card Number (16 digits)", placeholder="4111111111111111", max_chars=19)
+            expiry = st.text_input("📅 Expiry Date (MMYY)", placeholder="1225", max_chars=4)
+        with col2:
+            amount = st.number_input("💰 Amount ($)", min_value=0.01, value=25.00, step=0.01)
+            approval_code = st.text_input("✅ Approval Code (6 digits)", max_chars=6)
+        merchant_name = st.text_input("🏪 Merchant Name", value="Your Store Name", max_chars=40)
+        return pan, expiry, amount, approval_code, merchant_name
+
+    def show_receipt_and_download(self, txn: Dict[str, Any]):
+        """Render a simple formatted receipt and give PDF download (masked card)."""
+        masked = mask_pan_for_display(txn.get("pan", ""))
+        st.markdown("### 🧾 Receipt")
+        st.write(f"**Merchant:** {txn.get('merchant_name')}")
+        st.write(f"**Terminal ID:** {st.session_state.terminal_id}")
+        st.write(f"**Date/Time:** {txn.get('timestamp').strftime('%Y-%m-%d %H:%M:%S')}")
+        st.write(f"**Card:** {masked}")
+        st.write(f"**Amount:** ${txn.get('amount'):.2f}")
+        st.write(f"**Approval Code:** {txn.get('approval_code')}")
+        st.write(f"**RRN:** {txn.get('rrn')}")
+        st.write(f"**Status:** {txn.get('status')}")
+
+        pdf_buf = self.generate_pdf_receipt(txn)
+        st.download_button(
+            "📄 Download PDF Receipt",
+            data=pdf_buf,
+            file_name=f"receipt_{txn.get('stan', int(time.time()))}.pdf",
+            mime="application/pdf"
+        )
+
+    # ---- main run ----
+    def run(self):
+        self.setup_page()
+        self.render_sidebar()
+
+        st.markdown("---")
+        pan, expiry, amount, approval_code, merchant_name = self.render_payment_form()
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("🚀 Process Force Sale"):
+                ok, msg, result = self.process_force_sale(pan, expiry, amount, approval_code, merchant_name)
+                if ok:
+                    st.success(f"✅ {msg}")
+                    # show receipt and download
+                    self.show_receipt_and_download(result)
+                else:
+                    st.error(f"❌ {msg}")
+                    # if result contains stan/rrn show minimal info
+                    if isinstance(result, tuple) and result[0]:
+                        st.
