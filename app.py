@@ -1,19 +1,636 @@
-⚙️ Setup
-Protocol: Visa Base I Protocol
-Code: 101.1
----
-Server Selection
----
-Certificates (Required)
-[Uploaders]
----
-Client Certificates (Optional) 
-[Uploaders]
----
-✅ Required certificates present
----
-🏪 Merchant Information
-Merchant ID: 000000000009020
-Terminal ID: 72000716
----
-[Action Buttons]
+#!/usr/bin/env python3
+"""
+Professional Payment Terminal - Full app with masked PDF receipts
+Requirements: streamlit, reportlab
+"""
+import streamlit as st
+import socket
+import ssl
+import struct
+import os
+import re
+from datetime import datetime
+import time
+import hashlib
+from typing import Tuple, Dict, Any
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+
+# === PASSWORD PROTECTION === 
+APP_PASSWORD_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # password: password
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🔒 Payment Terminal")
+    password = st.text_input("Enter Password", type="password")
+    if st.button("Access System"):
+        if hashlib.sha256(password.encode()).hexdigest() == APP_PASSWORD_HASH:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password")
+    st.stop()
+# === END PASSWORD PROTECTION ===
+
+# ---------------------- Helper functions ----------------------
+def mask_pan_for_display(pan: str) -> str:
+    """Return masked PAN for display: 4 + ' **** **** ' + last4"""
+    clean = re.sub(r'\D', '', pan)
+    if len(clean) >= 8:
+        return f"{clean[:4]} **** **** {clean[-4:]}"
+    if len(clean) >= 4:
+        return f"{clean[:4]} ****"
+    return clean
+
+def build_iso8583_force_sale(pan: str, expiry: str, amount: float, approval_code: str, stan: int, merchant_name: str):
+    """
+    Build a simple Visa Base I Force Sale-like message.
+    Returns: bytes message with 2-byte length prefix, plus stan and rrn.
+    """
+    mti = "0200"
+    rrn = f"{str(stan).zfill(6)}FSL"
+    now = datetime.now()
+    transmission_time = now.strftime("%m%d%H%M%S")
+    local_time = now.strftime("%H%M%S")
+    local_date = now.strftime("%m%d")
+
+    data_elements = {
+        2: pan,
+        3: "000000",
+        4: str(int(amount * 100)).zfill(12),
+        7: transmission_time,
+        11: str(stan).zfill(6),
+        12: local_time,
+        13: local_date,
+        14: expiry,
+        18: "5999",
+        22: "012",
+        24: "200",
+        25: "08",
+        32: "00000000001",
+        35: pan + "=" + expiry + "100",
+        37: rrn,
+        38: approval_code,
+        41: st.session_state.terminal_id,
+        42: st.session_state.merchant_id,
+        43: merchant_name.ljust(40)[:40],
+        49: "840",
+        60: "00108001"
+    }
+
+    # bitmap for fields 1-64
+    bitmap = bytearray(8)
+    for field_num in data_elements.keys():
+        if 1 <= field_num <= 64:
+            byte_index = (field_num - 1) // 8
+            bit_index = 7 - ((field_num - 1) % 8)
+            bitmap[byte_index] |= (1 << bit_index)
+
+    bitmap_hex = bitmap.hex().upper()
+    data_str = ""
+    for field_num in sorted(data_elements.keys()):
+        val = data_elements[field_num]
+        # LLVAR fields
+        if field_num in [2, 32, 35]:
+            data_str += f"{len(val):02d}{val}"
+        elif field_num == 60:
+            data_str += f"{len(val):03d}{val}"
+        else:
+            data_str += val
+
+    iso_message = mti + bitmap_hex + data_str
+    msg_bytes = iso_message.encode("ascii")
+    length_prefix = struct.pack(">H", len(msg_bytes))
+    return length_prefix + msg_bytes, str(stan).zfill(6), rrn
+
+def parse_iso8583_response(resp: bytes) -> Dict[str, Any]:
+    """Parse minimal info from response: get field 39 (response code) and maybe auth code."""
+    out = {"response_code": None, "approval_code": None}
+    if not resp:
+        return out
+    # remove length prefix if present
+    if len(resp) > 2:
+        prefix = struct.unpack(">H", resp[:2])[0]
+        if prefix == len(resp) - 2:
+            resp = resp[2:]
+    s = resp.decode("ascii", errors="ignore")
+    # field 39 usually is two chars at a particular offset — simplistic approach:
+    # we look for '39' indicator in this simple format (not robust for all ISO messages).
+    # Best-effort: search for '39' as field number then next 2 chars.
+    idx = s.find("39")
+    if idx != -1 and len(s) >= idx + 2 + 2:
+        out["response_code"] = s[idx + 2: idx + 4]
+    # approval code field 38
+    idx38 = s.find("38")
+    if idx38 != -1 and len(s) >= idx38 + 2 + 6:
+        out["approval_code"] = s[idx38 + 2: idx38 + 8]
+    return out
+
+# ---------------------- Main Client Class ----------------------
+class StreamlitForceSaleClient:
+    def __init__(self):
+        # session state defaults
+        if 'merchant_id' not in st.session_state:
+            st.session_state.merchant_id = "000000000009020"
+        if 'terminal_id' not in st.session_state:
+            st.session_state.terminal_id = "72000716"
+        if 'stan_counter' not in st.session_state:
+            st.session_state.stan_counter = 100001
+        if 'transaction_history' not in st.session_state:
+            st.session_state.transaction_history = []
+        if 'cert_files_uploaded' not in st.session_state:
+            st.session_state.cert_files_uploaded = False
+        if 'show_history' not in st.session_state:
+            st.session_state.show_history = False
+        if 'demo_mode' not in st.session_state:
+            st.session_state.demo_mode = False
+
+        # Protocol Configuration
+        self.PROTOCOL_CONFIG = {
+            'name': 'Visa Base I Protocol',
+            'code': '101.1',
+            'standard': 'ISO 8583',
+            'transaction_type': 'Force Sale'
+        }
+
+        # Servers
+        self.SERVERS = {
+            "Primary": {"host": "102.163.40.20", "port": 8090},
+            "Secondary": {"host": "10.252.251.5", "port": 8080}
+        }
+
+        # Cert paths
+        self.CERT_DIR = "./certs"
+        os.makedirs(self.CERT_DIR, exist_ok=True)
+        self.CAD_CERT = os.path.join(self.CERT_DIR, "cad.crt")
+        self.ROOT_CERT = os.path.join(self.CERT_DIR, "root.crt")
+        self.CLIENT_CERT = os.path.join(self.CERT_DIR, "client.crt")  # Optional client certificate
+        self.CLIENT_KEY = os.path.join(self.CERT_DIR, "client.key")   # Optional client key
+        self.connection = None
+
+    # ---- UI helpers ----
+    def setup_page(self):
+        st.set_page_config(
+            page_title="Professional Payment Terminal", 
+            page_icon="💳", 
+            layout="wide",
+            initial_sidebar_state="expanded"
+        )
+
+    def render_protocol_info(self):
+        """Display protocol information below main title"""
+        st.markdown(f"""
+        <div style="text-align: center; margin-bottom: 20px;">
+            <div style="background-color: #1f77b4; color: white; padding: 8px 16px; border-radius: 20px; font-weight: bold; display: inline-block; margin: 10px 0;">
+                🔒 {self.PROTOCOL_CONFIG['name']}
+            </div>
+            <p style="color: #666; font-size: 0.9em;">
+                <strong>Protocol Code:</strong> {self.PROTOCOL_CONFIG['code']} | 
+                <strong>Standard:</strong> {self.PROTOCOL_CONFIG['standard']}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    def render_sidebar(self):
+        st.sidebar.title("⚙️ Setup")
+        
+        # Protocol info in sidebar
+        st.sidebar.markdown(f"""
+        **Protocol:** {self.PROTOCOL_CONFIG['name']}  
+        **Code:** {self.PROTOCOL_CONFIG['code']}
+        """)
+        
+        st.sidebar.markdown("---")
+        
+        # server selection
+        server = st.sidebar.selectbox("Select Server", list(self.SERVERS.keys()), index=0)
+        st.session_state.selected_server = server
+
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🔐 Certificates (Required)")
+        cad = st.sidebar.file_uploader("Intermediate CA (cad.crt)", type=["crt", "pem"], key="cad")
+        root = st.sidebar.file_uploader("Root CA (root.crt)", type=["crt", "pem"], key="root")
+
+        if cad:
+            with open(self.CAD_CERT, "wb") as f:
+                f.write(cad.getvalue())
+            st.sidebar.success("cad.crt saved")
+        if root:
+            with open(self.ROOT_CERT, "wb") as f:
+                f.write(root.getvalue())
+            st.sidebar.success("root.crt saved")
+
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🔑 Client Certificates (Optional)")
+        client_cert = st.sidebar.file_uploader("Client Certificate (client.crt)", type=["crt", "pem"], key="client_cert")
+        client_key = st.sidebar.file_uploader("Client Key (client.key)", type=["key", "pem"], key="client_key")
+
+        if client_cert:
+            with open(self.CLIENT_CERT, "wb") as f:
+                f.write(client_cert.getvalue())
+            st.sidebar.success("client.crt saved")
+        if client_key:
+            with open(self.CLIENT_KEY, "wb") as f:
+                f.write(client_key.getvalue())
+            st.sidebar.success("client.key saved")
+
+        # Check certificate status
+        certs_ready = os.path.exists(self.CAD_CERT) and os.path.exists(self.ROOT_CERT)
+        if certs_ready:
+            st.sidebar.success("✅ Required certificates present")
+            st.session_state.cert_files_uploaded = True
+            
+            # Display merchant and terminal information after certificates are loaded
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("🏪 Merchant Information")
+            st.sidebar.info(f"**Merchant ID:** {st.session_state.merchant_id}")
+            st.sidebar.info(f"**Terminal ID:** {st.session_state.terminal_id}")
+            
+            # Check for optional client certificates
+            has_client_cert = os.path.exists(self.CLIENT_CERT)
+            has_client_key = os.path.exists(self.CLIENT_KEY)
+            
+            if has_client_cert and has_client_key:
+                st.sidebar.success("✅ Client certificates present")
+            elif has_client_cert or has_client_key:
+                st.sidebar.warning("⚠️ Partial client certificates")
+            else:
+                st.sidebar.info("ℹ️ Using server authentication only")
+        else:
+            st.sidebar.error("❌ Please upload cad.crt and root.crt")
+            st.session_state.demo_mode = True
+
+        st.sidebar.markdown("---")
+        if st.sidebar.button("🔄 Test Connection", use_container_width=True):
+            self.test_connection()
+
+        if st.sidebar.button("📋 Transaction History", use_container_width=True):
+            st.session_state.show_history = True
+            st.rerun()
+
+        # Demo mode button when certificates aren't ready
+        if not certs_ready:
+            st.sidebar.markdown("---")
+            if st.sidebar.button("🎮 Process Demo Transaction", use_container_width=True, type="secondary"):
+                self.process_demo_transaction()
+
+    # ---- certificate/SSL helpers ----
+    def create_ssl_context(self) -> Tuple[Any, bool]:
+        """Create SSL context trusting root.crt; use cad.crt and optionally client certs."""
+        try:
+            if not os.path.exists(self.ROOT_CERT):
+                return "Root certificate missing", False
+            
+            # Create context with minimal security requirements to handle weak certificates
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_REQUIRED
+            
+            # Set minimum security level to handle weak certificates
+            context.set_ciphers('DEFAULT:@SECLEVEL=0')  # Lowest security level
+            context.options |= ssl.OP_NO_SSLv2
+            context.options |= ssl.OP_NO_SSLv3
+            
+            # Load root certificate
+            try:
+                context.load_verify_locations(cafile=self.ROOT_CERT)
+            except Exception as e:
+                return f"Failed to load root CA: {e}", False
+            
+            # Try to load intermediate CA - skip if it fails due to weak certificates
+            try:
+                if os.path.exists(self.CAD_CERT):
+                    context.load_cert_chain(certfile=self.CAD_CERT)
+            except Exception as e:
+                # If intermediate CA loading fails, continue without it
+                st.warning(f"⚠️ Intermediate CA loading issue: {e}. Continuing without intermediate certificate.")
+            
+            # Optionally load client certificate and key if both are present
+            if os.path.exists(self.CLIENT_CERT) and os.path.exists(self.CLIENT_KEY):
+                try:
+                    context.load_cert_chain(certfile=self.CLIENT_CERT, keyfile=self.CLIENT_KEY)
+                    st.sidebar.info("Using client certificate authentication")
+                except Exception as e:
+                    st.sidebar.warning(f"Client certificate issue: {e}")
+            
+            return context, True
+        except Exception as e:
+            return f"SSL context error: {e}", False
+
+    def test_connection(self):
+        if not os.path.exists(self.ROOT_CERT):
+            st.error("root.crt is missing in ./certs")
+            return
+        ctx, ok = self.create_ssl_context()
+        if not ok:
+            st.error(ctx)
+            return
+        server_key = st.session_state.get("selected_server", "Primary")
+        server = self.SERVERS[server_key]
+        try:
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(10)
+            ssock = ctx.wrap_socket(raw, server_hostname=server["host"])
+            ssock.connect((server["host"], server["port"]))
+            ssock.close()
+            st.success(f"✅ Connected to {server['host']}:{server['port']}")
+            st.success(f"📡 Protocol: {self.PROTOCOL_CONFIG['name']}")
+        except Exception as e:
+            st.error(f"❌ Connection failed: {e}")
+
+    # ---- ISO8583 send/receive ----
+    def connect_socket(self):
+        server_key = st.session_state.get("selected_server", "Primary")
+        server = self.SERVERS[server_key]
+        ctx, ok = self.create_ssl_context()
+        if not ok:
+            return None, f"SSL error: {ctx}"
+        try:
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(15)
+            ssock = ctx.wrap_socket(raw, server_hostname=server["host"])
+            ssock.settimeout(30)
+            ssock.connect((server["host"], server["port"]))
+            return ssock, None
+        except Exception as e:
+            return None, f"Connection failed: {e}"
+
+    def send_iso_message(self, msg: bytes) -> Tuple[bool, str, bytes]:
+        sock, err = self.connect_socket()
+        if not sock:
+            return False, err, b""
+        try:
+            sock.sendall(msg)
+            data = sock.recv(8192)
+            return True, "OK", data
+        except Exception as e:
+            return False, f"Send/recv failed: {e}", b""
+        finally:
+            try:
+                sock.close()
+            except:
+                pass
+
+    # ---- PDF generation ----
+    def generate_pdf_receipt(self, txn: Dict[str, Any]) -> BytesIO:
+        """Generate a printable PDF receipt with masked PAN."""
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        
+        # Header
+        c.setFont("Helvetica-Bold", 16)
+        c.drawCentredString(width / 2, height - 50, "PAYMENT RECEIPT")
+        c.setFont("Helvetica", 10)
+        c.drawCentredString(width / 2, height - 70, f"Protocol: {self.PROTOCOL_CONFIG['name']}")
+
+        y = height - 100
+        line_gap = 20
+
+        def draw(label, value):
+            nonlocal y
+            c.drawString(72, y, f"{label}: {value}")
+            y -= line_gap
+
+        masked = mask_pan_for_display(txn.get("pan", ""))
+
+        draw("Merchant", txn.get("merchant_name", "Your Store"))
+        draw("Terminal ID", st.session_state.terminal_id)
+        draw("Date/Time", txn.get("timestamp", datetime.now()).strftime("%Y-%m-%d %H:%M:%S"))
+        draw("Card Number", masked)
+        draw("Amount", f"${txn.get('amount', 0.0):.2f}")
+        draw("Approval Code", txn.get("approval_code", "N/A"))
+        draw("Reference Number", txn.get("rrn", "N/A"))
+        draw("Status", txn.get("status", "N/A"))
+        draw("Protocol", self.PROTOCOL_CONFIG['name'])
+
+        # Footer
+        c.setFont("Helvetica-Oblique", 9)
+        c.drawCentredString(width / 2, 40, "Thank you for your business!")
+
+        c.showPage()
+        c.save()
+        buffer.seek(0)
+        return buffer
+
+    # ---- Demo transaction ----
+    def process_demo_transaction(self):
+        """Process a demo transaction for testing"""
+        st.info("🔄 Processing demo transaction...")
+        
+        # Generate demo transition IDs
+        demo_stan = str(st.session_state.stan_counter).zfill(6)
+        demo_rrn = demo_stan + "FSL"
+        st.session_state.stan_counter += 1
+        
+        # Simulate processing delay
+        with st.spinner("Processing payment..."):
+            time.sleep(2)
+        
+        # Demo result
+        st.success("✅ Demo Payment Approved!")
+        
+        # Create demo receipt data
+        demo_data = {
+            'card_input': '4111111111111111',
+            'expiry_input': '1225',
+            'amount': 25.00,
+            'approval_input': '123456',
+            'merchant_name': 'Demo Electronics Store'
+        }
+        
+        demo_result = {
+            'response_message': 'APPROVED',
+            'approval_code': 'DEMO123',
+            'auth_code': '123456',
+            'response_code': '00',
+            'systems_trace_number': demo_stan,
+            'retrieval_reference_number': demo_rrn,
+            'protocol': self.PROTOCOL_CONFIG['name'],
+            'transaction_type': 'Force Sale'
+        }
+        
+        # Add to transaction history
+        transaction_record = {
+            'timestamp': datetime.now(),
+            'amount': demo_data['amount'],
+            'card': mask_pan_for_display(demo_data['card_input']),
+            'status': 'APPROVED',
+            'approval_code': 'DEMO123',
+            'response_code': '00',
+            'stan': demo_stan,
+            'rrn': demo_rrn,
+            'demo': True,
+            'merchant_name': demo_data['merchant_name'],
+            'protocol': self.PROTOCOL_CONFIG['name']
+        }
+        st.session_state.transaction_history.append(transaction_record)
+        
+        # Show receipt
+        self.show_receipt_and_download(transaction_record)
+
+    # ---- high-level transaction flow ----
+    def process_force_sale(self, pan: str, expiry: str, amount: float, approval_code: str, merchant_name: str):
+        # validate basic
+        if len(re.sub(r'\D', '', pan)) != 16:
+            return False, "PAN must be 16 digits", None
+        if len(re.sub(r'\D', '', expiry)) != 4:
+            return False, "Expiry must be MMYY (4 digits)", None
+        if len(approval_code) != 6 or not approval_code.isdigit():
+            return False, "Approval code must be 6 digits", None
+
+        stan = st.session_state.stan_counter
+        st.session_state.stan_counter += 1
+
+        msg, stan_str, rrn = build_iso8583_force_sale(pan, expiry, amount, approval_code, stan, merchant_name)
+        sent, status, data = self.send_iso_message(msg)
+        if not sent:
+            return False, status, (stan_str, rrn)
+
+        parsed = parse_iso8583_response(data)
+        rc = parsed.get("response_code")
+        approved = rc == "00" or rc is None and "APPROVED" in status.upper()
+        approval_code_from_resp = parsed.get("approval_code") or approval_code
+
+        status_text = "APPROVED" if approved else f"DECLINED ({rc})" if rc else "DECLINED"
+        txn = {
+            "timestamp": datetime.now(),
+            "merchant_name": merchant_name,
+            "pan": re.sub(r'\D', '', pan),
+            "amount": amount,
+            "approval_code": approval_code_from_resp,
+            "rrn": rrn,
+            "stan": stan_str,
+            "status": status_text,
+            "protocol": self.PROTOCOL_CONFIG['name'],
+            "demo": False
+        }
+        st.session_state.transaction_history.append(txn)
+
+        return True, status_text, txn
+
+    # ---- UI: Payment form & actions ----
+    def render_payment_form(self):
+        st.header("📝 Payment Details")
+        
+        # Show demo mode banner if no certificates
+        if st.session_state.demo_mode:
+            st.warning("🎮 **DEMO MODE** - Upload certificates for live transactions")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            pan = st.text_input("💳 Card Number (16 digits)", placeholder="4111111111111111", max_chars=19)
+            expiry = st.text_input("📅 Expiry Date (MMYY)", placeholder="1225", max_chars=4)
+        with col2:
+            amount = st.number_input("💰 Amount ($)", min_value=0.01, value=25.00, step=0.01)
+            approval_code = st.text_input("✅ Approval Code (6 digits)", max_chars=6)
+        merchant_name = st.text_input("🏪 Merchant Name", value="Your Store Name", max_chars=40)
+        return pan, expiry, amount, approval_code, merchant_name
+
+    def show_receipt_and_download(self, txn: Dict[str, Any]):
+        """Render a simple formatted receipt and give PDF download (masked card)."""
+        masked = mask_pan_for_display(txn.get("pan", ""))
+        
+        st.markdown("### 🧾 Payment Receipt")
+        st.markdown("---")
+        
+        # Show demo indicator if it's a demo transaction
+        if txn.get('demo', False):
+            st.info("🎮 **This is a demo transaction**")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Merchant:** {txn.get('merchant_name')}")
+            st.write(f"**Terminal ID:** {st.session_state.terminal_id}")
+            st.write(f"**Date/Time:** {txn.get('timestamp').strftime('%Y-%m-%d %H:%M:%S')}")
+            st.write(f"**Card:** {masked}")
+        with col2:
+            st.write(f"**Amount:** ${txn.get('amount'):.2f}")
+            st.write(f"**Approval Code:** {txn.get('approval_code')}")
+            st.write(f"**Reference:** {txn.get('rrn')}")
+            st.write(f"**Status:** {txn.get('status')}")
+            st.write(f"**Processing Network:** {self.PROTOCOL_CONFIG['name']}")
+
+        # PDF Download
+        pdf_buf = self.generate_pdf_receipt(txn)
+        st.download_button(
+            "📄 Download PDF Receipt",
+            data=pdf_buf,
+            file_name=f"receipt_{txn.get('stan', int(time.time()))}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
+    def show_transaction_history(self):
+        """Show transaction history"""
+        st.header("📋 Transaction History")
+        if not st.session_state.transaction_history:
+            st.info("No transactions yet")
+            return
+        
+        for i, txn in enumerate(reversed(st.session_state.transaction_history[-10:])):
+            demo_indicator = " 🎮" if txn.get('demo', False) else ""
+            with st.expander(f"Transaction {i+1} - ${txn['amount']:.2f} - {txn['timestamp'].strftime('%H:%M:%S')}{demo_indicator}"):
+                st.write(f"**Merchant:** {txn['merchant_name']}")
+                st.write(f"**Card:** {mask_pan_for_display(txn['pan'])}")
+                st.write(f"**Amount:** ${txn['amount']:.2f}")
+                st.write(f"**Status:** {txn['status']}")
+                st.write(f"**Approval:** {txn['approval_code']}")
+                st.write(f"**Reference:** {txn['rrn']}")
+                st.write(f"**Protocol:** {txn.get('protocol', self.PROTOCOL_CONFIG['name'])}")
+                if txn.get('demo', False):
+                    st.write("**Type:** 🎮 Demo Transaction")
+
+    # ---- main run ----
+    def run(self):
+        self.setup_page()
+        self.render_sidebar()
+
+        # Main content area
+        st.title("💳 Professional Payment Terminal")
+        
+        # Protocol info below main title
+        self.render_protocol_info()
+        
+        st.markdown("---")
+        
+        # Check if we should show history or payment form
+        if st.session_state.show_history:
+            self.show_transaction_history()
+            if st.button("← Back to Payment"):
+                st.session_state.show_history = False
+                st.rerun()
+        else:
+            # Show payment form by default
+            pan, expiry, amount, approval_code, merchant_name = self.render_payment_form()
+
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                if st.session_state.demo_mode:
+                    if st.button("🎮 Process Demo Transaction", type="secondary", use_container_width=True):
+                        self.process_demo_transaction()
+                else:
+                    if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
+                        if not st.session_state.cert_files_uploaded:
+                            st.error("❌ Please upload certificates first")
+                        else:
+                            ok, msg, result = self.process_force_sale(pan, expiry, amount, approval_code, merchant_name)
+                            if ok:
+                                st.success(f"✅ {msg}")
+                                # show receipt and download
+                                self.show_receipt_and_download(result)
+                            else:
+                                st.error(f"❌ {msg}")
+                                # if result contains stan/rrn show minimal info
+                                if isinstance(result, tuple) and result[0]:
+                                    st.write(f"STAN: {result[0]}, RRN: {result[1]}")
+
+def main():
+    client = StreamlitForceSaleClient()
+    client.run()
+
+if __name__ == "__main__":
+    main()
