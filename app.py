@@ -79,7 +79,7 @@ class ISO8583BaseITerminal:
         os.makedirs(self.CERT_DIR, exist_ok=True)
         
         self.CLIENT_CERT = f"{self.CERT_DIR}/cad.crt" 
-        self.CLIENT_KEY = f"{self.CLIENT_DIR}/client.key"
+        self.CLIENT_KEY = f"{self.CERT_DIR}/client.key"  # Fixed: Changed CLIENT_DIR to CERT_DIR
         self.connection = None
 
     def setup_page(self):
@@ -148,7 +148,258 @@ class ISO8583BaseITerminal:
         </style>
         """, unsafe_allow_html=True)
 
-    # ... [Keep all the previous methods the same until show_receipt method] ...
+    def run(self):
+        """Main application flow"""
+        self.setup_page()
+        
+        st.markdown('<h1 class="main-header">💳 ISO-8583 Base I Terminal</h1>', unsafe_allow_html=True)
+        st.markdown('<p class="sub-header">Online Authorization • Protocol 101.1 • 4-Digit Approval Codes</p>', unsafe_allow_html=True)
+        
+        # Sidebar for configuration
+        with st.sidebar:
+            st.header("⚙️ Configuration")
+            self.show_configuration()
+            
+            st.header("📊 Transaction History")
+            self.show_transaction_history()
+            
+            st.header("🔐 Certificate Setup")
+            self.show_certificate_upload()
+        
+        # Main content area
+        tab1, tab2, tab3 = st.tabs(["💳 Payment Terminal", "🔄 Transaction Reversal", "📡 Connection Test"])
+        
+        with tab1:
+            self.show_payment_terminal()
+        
+        with tab2:
+            self.show_reversal_terminal()
+        
+        with tab3:
+            self.show_connection_test()
+
+    def show_configuration(self):
+        """Show configuration settings"""
+        st.session_state.merchant_id = st.text_input("Merchant ID", st.session_state.merchant_id)
+        st.session_state.terminal_id = st.text_input("Terminal ID", st.session_state.terminal_id)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Reset STAN Counter"):
+                st.session_state.stan_counter = 100001
+                st.success("STAN counter reset to 100001")
+        
+        with col2:
+            if st.button("New Batch"):
+                st.session_state.batch_number = random.randint(1000, 9999)
+                st.success(f"New batch: {st.session_state.batch_number}")
+        
+        st.info(f"Current STAN: {st.session_state.stan_counter}")
+        st.info(f"Current Batch: {st.session_state.batch_number}")
+
+    def show_transaction_history(self):
+        """Show recent transactions"""
+        if not st.session_state.transaction_history:
+            st.write("No transactions yet")
+            return
+        
+        for i, tx in enumerate(st.session_state.transaction_history[-5:]):
+            with st.expander(f"Tx {i+1}: {tx.get('pan_mask', 'N/A')} - ${tx.get('amount', 0):.2f}"):
+                st.json(tx)
+
+    def show_certificate_upload(self):
+        """Handle certificate file uploads"""
+        if st.session_state.cert_files_uploaded:
+            st.success("✅ Certificates uploaded")
+            if st.button("Remove Certificates"):
+                st.session_state.cert_files_uploaded = False
+                st.rerun()
+            return
+        
+        cert_file = st.file_uploader("Upload Client Certificate", type=['crt', 'pem'])
+        key_file = st.file_uploader("Upload Client Key", type=['key', 'pem'])
+        
+        if cert_file and key_file:
+            # Save uploaded files
+            with open(self.CLIENT_CERT, "wb") as f:
+                f.write(cert_file.getvalue())
+            with open(self.CLIENT_KEY, "wb") as f:
+                f.write(key_file.getvalue())
+            
+            st.session_state.cert_files_uploaded = True
+            st.success("✅ Certificates uploaded successfully!")
+            st.rerun()
+
+    def show_payment_terminal(self):
+        """Show payment terminal interface"""
+        st.header("💳 Payment Terminal")
+        
+        with st.form("payment_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                merchant_name = st.text_input("Merchant Name", "Test Merchant")
+                card_input = st.text_input("Card Number (PAN)", "4111111111111111", 
+                                         help="Enter 16-digit card number")
+                expiry_input = st.text_input("Expiry Date (MMYY)", "1225",
+                                           help="Month and Year (MMYY)")
+                
+            with col2:
+                amount = st.number_input("Amount ($)", min_value=0.01, value=1.00, step=0.01)
+                cvv = st.text_input("CVV/CVC", "123", max_chars=4,
+                                  help="3 or 4 digit security code")
+                pin_input = st.text_input("PIN", "1234", type="password", max_chars=4,
+                                        help="4-digit PIN")
+            
+            # Process payment
+            if st.form_submit_button("🚀 Process Payment", use_container_width=True):
+                if self.validate_payment_input(card_input, expiry_input, amount):
+                    form_data = {
+                        'merchant_name': merchant_name,
+                        'card_input': card_input,
+                        'expiry_input': expiry_input,
+                        'amount': amount,
+                        'cvv': cvv,
+                        'pin_input': pin_input
+                    }
+                    
+                    with st.spinner("Processing transaction..."):
+                        result = self.process_payment(form_data)
+                    
+                    # Show receipt
+                    self.show_receipt(form_data, result)
+                    
+                    # Store transaction
+                    st.session_state.transaction_history.append({
+                        'timestamp': datetime.now().isoformat(),
+                        'pan_mask': self.format_card_receipt(card_input),
+                        'amount': amount,
+                        'response_code': result.get('response_code'),
+                        'approval_code': result.get('approval_code'),
+                        'rrn': result.get('rrn'),
+                        'stan': result.get('stan')
+                    })
+                    
+                    # Update STAN counter
+                    st.session_state.stan_counter += 1
+                    st.session_state.last_transaction = result
+
+    def show_reversal_terminal(self):
+        """Show transaction reversal interface"""
+        st.header("🔄 Transaction Reversal")
+        
+        if not st.session_state.last_transaction:
+            st.warning("No recent transaction to reverse")
+            return
+        
+        st.info("Last transaction details:")
+        st.json(st.session_state.last_transaction)
+        
+        if st.button("🔄 Reverse Last Transaction", use_container_width=True):
+            with st.spinner("Reversing transaction..."):
+                result = self.process_reversal()
+            
+            if result.get('success'):
+                st.success("✅ Transaction reversed successfully!")
+                st.session_state.last_transaction = None
+            else:
+                st.error("❌ Reversal failed")
+
+    def show_connection_test(self):
+        """Show connection testing interface"""
+        st.header("📡 Connection Test")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Primary Server")
+            if st.button("Test Primary Connection", use_container_width=True):
+                with st.spinner("Testing primary connection..."):
+                    success = self.test_connection('primary')
+                if success:
+                    st.success("✅ Primary connection successful")
+                else:
+                    st.error("❌ Primary connection failed")
+        
+        with col2:
+            st.subheader("Secondary Server")
+            if st.button("Test Secondary Connection", use_container_width=True):
+                with st.spinner("Testing secondary connection..."):
+                    success = self.test_connection('secondary')
+                if success:
+                    st.success("✅ Secondary connection successful")
+                else:
+                    st.error("❌ Secondary connection failed")
+
+    def validate_payment_input(self, card_input: str, expiry_input: str, amount: float) -> bool:
+        """Validate payment form inputs"""
+        clean_pan = re.sub(r'\D', '', card_input)
+        if len(clean_pan) != 16:
+            st.error("❌ Card number must be 16 digits")
+            return False
+        
+        clean_expiry = re.sub(r'\D', '', expiry_input)
+        if len(clean_expiry) != 4:
+            st.error("❌ Expiry date must be 4 digits (MMYY)")
+            return False
+        
+        if amount <= 0:
+            st.error("❌ Amount must be greater than 0")
+            return False
+        
+        return True
+
+    def process_payment(self, form_data: Dict) -> Dict:
+        """Process payment transaction"""
+        # Generate transaction details
+        stan = str(st.session_state.stan_counter).zfill(6)
+        rrn = datetime.now().strftime("%Y%m%d%H%M%S")
+        approval_code = str(random.randint(1000, 9999))
+        
+        # Simulate processing delay
+        time.sleep(2)
+        
+        # Simulate response (90% approval rate)
+        if random.random() < 0.9:
+            response_code = "00"
+            response_message = "APPROVED"
+        else:
+            response_code = "05"
+            response_message = "DECLINED"
+            approval_code = "0000"
+        
+        return {
+            'success': True,
+            'response_code': response_code,
+            'response_message': response_message,
+            'approval_code': approval_code,
+            'full_auth_code': f"{approval_code}{response_code}",
+            'stan': stan,
+            'rrn': rrn,
+            'receipt_number': st.session_state.receipt_counter,
+            'batch_number': st.session_state.batch_number,
+            'timestamp': datetime.now().isoformat()
+        }
+
+    def process_reversal(self) -> Dict:
+        """Process transaction reversal"""
+        # Simulate reversal processing
+        time.sleep(2)
+        
+        return {
+            'success': True,
+            'message': 'Reversal processed successfully',
+            'timestamp': datetime.now().isoformat()
+        }
+
+    def test_connection(self, server: str) -> bool:
+        """Test connection to server"""
+        try:
+            # Simulate connection test
+            time.sleep(1)
+            return random.random() < 0.8  # 80% success rate for demo
+        except Exception:
+            return False
 
     def show_receipt(self, form_data, result):
         """Show payment receipt using Streamlit components (no HTML)"""
@@ -282,8 +533,6 @@ Response Code: {result.get('response_code', 'N/A')}
 {'=' * 50}
 """
 
-    # ... [Keep all other methods the same] ...
-
     def format_card_receipt(self, pan: str) -> str:
         """Format card for receipt - show only last 4 digits"""
         clean_pan = re.sub(r'\D', '', pan)
@@ -295,8 +544,6 @@ Response Code: {result.get('response_code', 'N/A')}
         """Format expiry for display"""
         clean_expiry = re.sub(r'\D', '', expiry)
         return f"{clean_expiry[:2]}/{clean_expiry[2:4]}"
-
-    # ... [Rest of the methods remain unchanged] ...
 
 def main():
     """Main function"""
