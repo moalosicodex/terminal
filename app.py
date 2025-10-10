@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 import time
 import hashlib
+import random
 
 # === PASSWORD PROTECTION === 
 APP_PASSWORD_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # "password"
@@ -47,6 +48,10 @@ class ISO8583BaseITerminal:
             st.session_state.terminal_id = "72000716"
         if 'stan_counter' not in st.session_state:
             st.session_state.stan_counter = 100001
+        if 'batch_number' not in st.session_state:
+            st.session_state.batch_number = random.randint(1000, 9999)
+        if 'receipt_counter' not in st.session_state:
+            st.session_state.receipt_counter = 1
         if 'last_transaction' not in st.session_state:
             st.session_state.last_transaction = None
         if 'transaction_history' not in st.session_state:
@@ -435,8 +440,10 @@ class ISO8583BaseITerminal:
         demo_result = {
             'response_message': 'APPROVED - Demo Transaction',
             'approval_code': '1234',
-            'full_auth_code': '123400',
-            'response_code': '00'
+            'full_auth_code': '123456',
+            'response_code': '00',
+            'rrn': f"{st.session_state.stan_counter:012d}",
+            'receipt_number': st.session_state.receipt_counter
         }
         
         # Add to transaction history
@@ -447,6 +454,8 @@ class ISO8583BaseITerminal:
             'status': demo_result['response_message'],
             'approval_code': demo_result['approval_code'],
             'response_code': demo_result['response_code'],
+            'receipt_number': demo_result['receipt_number'],
+            'rrn': demo_result['rrn'],
             'demo': True
         }
         st.session_state.transaction_history.append(transaction_record)
@@ -608,9 +617,18 @@ class ISO8583BaseITerminal:
         return errors
 
     def format_card_display(self, pan: str) -> str:
-        """Format card for display"""
+        """Format card for display - show only last 4 digits"""
         clean_pan = re.sub(r'\D', '', pan)
-        return f"{clean_pan[:4]} {clean_pan[4:8]} {clean_pan[8:12]} {clean_pan[12:16]}"
+        if len(clean_pan) == 16:
+            return f"**** **** **** {clean_pan[12:16]}"
+        return clean_pan
+
+    def format_card_receipt(self, pan: str) -> str:
+        """Format card for receipt - show only last 4 digits"""
+        clean_pan = re.sub(r'\D', '', pan)
+        if len(clean_pan) == 16:
+            return f"XXXX-XXXX-XXXX-{clean_pan[12:16]}"
+        return clean_pan
 
     def format_expiry_display(self, expiry: str) -> str:
         """Format expiry for display"""
@@ -666,7 +684,18 @@ class ISO8583BaseITerminal:
     def build_online_sale_message(self, pan: str, amount: float, expiry: str, approval_code: str, merchant_name: str):
         """Build Online Sale ISO message with 4-digit approval codes"""
         stan = str(st.session_state.stan_counter).zfill(6)
+        rrn = f"{st.session_state.stan_counter:012d}"  # 12-digit RRN
+        
+        # Store transaction details for receipt
+        st.session_state.current_transaction_details = {
+            'stan': stan,
+            'rrn': rrn,
+            'receipt_number': st.session_state.receipt_counter,
+            'batch_number': st.session_state.batch_number
+        }
+        
         st.session_state.stan_counter += 1
+        st.session_state.receipt_counter += 1
         
         now = datetime.now()
         transmission_time = now.strftime("%m%d%H%M%S")
@@ -692,7 +721,7 @@ class ISO8583BaseITerminal:
             25: "00",  # POS condition code - Normal presentment
             32: "00000000001",  # Acquiring institution ID code
             35: pan + "=" + expiry + "100",  # Track 2 data
-            37: stan + "ONL",  # Retrieval reference number
+            37: rrn,  # Retrieval Reference Number (12 digits)
             38: auth_code,  # Approval code (4-digit padded to 6)
             41: st.session_state.terminal_id,  # Terminal ID
             42: st.session_state.merchant_id,  # Merchant ID
@@ -741,12 +770,11 @@ class ISO8583BaseITerminal:
             MTI: {mti}<br>
             DE 3 (Processing): {data_elements[3]}<br>
             DE 24 (Function): {data_elements[24]}<br>
+            DE 37 (RRN): {data_elements[37]}<br>
             DE 38 (Auth): {data_elements[38]}<br>
-            Input Code: {approval_code}<br>
-            Sent Code: {auth_code}<br>
-            Merchant ID: {st.session_state.merchant_id}<br>
-            Terminal ID: {st.session_state.terminal_id}<br>
-            STAN: {stan}
+            STAN: {stan}<br>
+            Receipt #: {st.session_state.current_transaction_details['receipt_number']}<br>
+            Batch #: {st.session_state.batch_number}
             </div>
             """, unsafe_allow_html=True)
     
@@ -814,6 +842,10 @@ class ISO8583BaseITerminal:
                     result["approval_code"] = auth_code[:4]  # First 4 digits only
                     result["full_auth_code"] = auth_code
             
+            # Add receipt details
+            if hasattr(st.session_state, 'current_transaction_details'):
+                result.update(st.session_state.current_transaction_details)
+            
             # If we didn't find structured fields, try to extract basic info
             if "response_code" not in result and len(response_str) >= 4:
                 if len(response_str) > 20:
@@ -828,8 +860,10 @@ class ISO8583BaseITerminal:
                 <strong>Parsed Response:</strong><br>
                 Response Code: {result.get('response_code', 'N/A')}<br>
                 Approval Code: {result.get('approval_code', 'N/A')}<br>
-                Full Auth Code: {result.get('full_auth_code', 'N/A')}<br>
-                Message: {result.get('response_message', 'N/A')}
+                RRN: {result.get('rrn', 'N/A')}<br>
+                STAN: {result.get('stan', 'N/A')}<br>
+                Receipt #: {result.get('receipt_number', 'N/A')}<br>
+                Batch #: {result.get('batch_number', 'N/A')}
                 </div>
                 """, unsafe_allow_html=True)
             
@@ -927,6 +961,10 @@ class ISO8583BaseITerminal:
                 'status': f"FAILED: {result['error']}",
                 'approval_code': 'N/A',
                 'response_code': 'ER',
+                'receipt_number': result.get('receipt_number', 'N/A'),
+                'rrn': result.get('rrn', 'N/A'),
+                'stan': result.get('stan', 'N/A'),
+                'batch_number': result.get('batch_number', 'N/A'),
                 'demo': False
             }
             st.session_state.transaction_history.append(transaction_record)
@@ -944,6 +982,10 @@ class ISO8583BaseITerminal:
                 'status': result.get('response_message', 'Unknown'),
                 'approval_code': result.get('approval_code', 'N/A'),
                 'response_code': result.get('response_code', 'N/A'),
+                'receipt_number': result.get('receipt_number', 'N/A'),
+                'rrn': result.get('rrn', 'N/A'),
+                'stan': result.get('stan', 'N/A'),
+                'batch_number': result.get('batch_number', 'N/A'),
                 'demo': False
             }
             st.session_state.transaction_history.append(transaction_record)
@@ -995,12 +1037,18 @@ class ISO8583BaseITerminal:
                 
                 <div style="font-weight: bold; color: #555;">Transaction Type:</div>
                 <div>🟢 Online Authorization</div>
+                
+                <div style="font-weight: bold; color: #555;">Receipt Number:</div>
+                <div style="font-weight: bold;">{result.get('receipt_number', 'N/A')}</div>
+                
+                <div style="font-weight: bold; color: #555;">Batch Number:</div>
+                <div>{result.get('batch_number', 'N/A')}</div>
             </div>
             
             <div style="background: white; padding: 15px; border-radius: 8px; margin: 15px 0;">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                     <div style="font-weight: bold; color: #555;">Card Number:</div>
-                    <div style="font-family: monospace;">{self.format_card_display(form_data['card_input'])}</div>
+                    <div style="font-family: monospace;">{self.format_card_receipt(form_data['card_input'])}</div>
                     
                     <div style="font-weight: bold; color: #555;">Expiry Date:</div>
                     <div>{self.format_expiry_display(form_data['expiry_input'])}</div>
@@ -1010,6 +1058,12 @@ class ISO8583BaseITerminal:
                     
                     <div style="font-weight: bold; color: #555;">Date/Time:</div>
                     <div>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
+                    
+                    <div style="font-weight: bold; color: #555;">RRN:</div>
+                    <div style="font-family: monospace;">{result.get('rrn', 'N/A')}</div>
+                    
+                    <div style="font-weight: bold; color: #555;">STAN:</div>
+                    <div style="font-family: monospace;">{result.get('stan', 'N/A')}</div>
                 </div>
             </div>
             
@@ -1022,11 +1076,14 @@ class ISO8583BaseITerminal:
                 
                 <div style="font-weight: bold; color: #555;">Response Code:</div>
                 <div style="font-family: monospace;">{result.get('response_code', 'N/A')}</div>
+                
+                <div style="font-weight: bold; color: #555;">Auth Code:</div>
+                <div style="font-family: monospace;">{result.get('full_auth_code', 'N/A')}</div>
             </div>
             
             <div style="text-align: center; margin-top: 25px; padding-top: 15px; border-top: 2px solid #ddd;">
                 <p style="font-weight: bold; color: #333; font-size: 1.1em;">THANK YOU FOR YOUR BUSINESS</p>
-                <p style="color: #666; font-size: 0.9em;">Transaction Ref: {st.session_state.stan_counter-1} • Protocol 101.1</p>
+                <p style="color: #666; font-size: 0.9em;">Keep this receipt for your records</p>
             </div>
         </div>
         """
@@ -1045,7 +1102,7 @@ class ISO8583BaseITerminal:
                 st.download_button(
                     label="📄 Download TXT",
                     data=receipt_text,
-                    file_name=f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    file_name=f"receipt_{result.get('receipt_number', 'unknown')}.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
@@ -1073,7 +1130,13 @@ Merchant ID: {st.session_state.merchant_id}
 Transaction: Online Authorization (Protocol 101.1)
 {'-' * 50}
 
-Card: {self.format_card_display(form_data['card_input'])}
+Receipt Number: {result.get('receipt_number', 'N/A')}
+Batch Number: {result.get('batch_number', 'N/A')}
+RRN: {result.get('rrn', 'N/A')}
+STAN: {result.get('stan', 'N/A')}
+{'-' * 50}
+
+Card: {self.format_card_receipt(form_data['card_input'])}
 Expiry: {self.format_expiry_display(form_data['expiry_input'])}
 Amount: ${form_data['amount']:.2f}
 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -1081,8 +1144,8 @@ Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 Status: {result.get('response_message', 'Unknown')}
 Approval Code: {result.get('approval_code', 'N/A')}
+Auth Code: {result.get('full_auth_code', 'N/A')}
 Response Code: {result.get('response_code', 'N/A')}
-Transaction Ref: {st.session_state.stan_counter-1}
 {'-' * 50}
 
       THANK YOU FOR YOUR BUSINESS
@@ -1134,6 +1197,10 @@ Transaction Ref: {st.session_state.stan_counter-1}
                 st.write(f"**Status:** {transaction['status']}")
                 st.write(f"**Approval Code:** {transaction['approval_code']}")
                 st.write(f"**Response Code:** {transaction['response_code']}")
+                st.write(f"**Receipt #:** {transaction.get('receipt_number', 'N/A')}")
+                st.write(f"**RRN:** {transaction.get('rrn', 'N/A')}")
+                st.write(f"**STAN:** {transaction.get('stan', 'N/A')}")
+                st.write(f"**Batch #:** {transaction.get('batch_number', 'N/A')}")
                 st.write(f"**Time:** {transaction['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
                 
         # Clear history button
