@@ -1,8 +1,23 @@
+#!/usr/bin/env python3
+"""
+Professional Payment Terminal Web Application
+With Complete ISO 8583 Implementation and Bug Fixes
+"""
+
 import streamlit as st
+import socket
+import ssl
+import struct
+import os
+import re
+from datetime import datetime
+from typing import Optional, Dict, Any, Tuple
+import time
+import base64
 import hashlib
 
 # === PASSWORD PROTECTION === 
-APP_PASSWORD_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # Change this!
+APP_PASSWORD_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # "password"
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -19,30 +34,9 @@ if not st.session_state.authenticated:
     st.stop()
 # === END PASSWORD PROTECTION ===
 
-# Your existing app continues here...
-st.title("💳 Professional Payment Terminal")
-
-
-#!/usr/bin/env python3
-"""
-Professional Payment Terminal Web Application
-With Certificate Management
-"""
-
-import streamlit as st
-import socket
-import ssl
-import struct
-import os
-import re
-from datetime import datetime
-from typing import Optional, Dict, Any, Tuple
-import time
-import base64
-
 class StreamlitForceSaleClient:
     """
-    Complete Force Sale Client with Certificate Management
+    Complete Force Sale Client with Certificate Management and ISO 8583 Fixes
     """
     
     def __init__(self):
@@ -114,6 +108,15 @@ class StreamlitForceSaleClient:
             padding: 15px;
             margin: 10px 0;
             background-color: #fff3cd;
+        }
+        .debug-box {
+            border: 1px solid #6c757d;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 5px 0;
+            background-color: #f8f9fa;
+            font-family: monospace;
+            font-size: 0.8em;
         }
         </style>
         """, unsafe_allow_html=True)
@@ -231,6 +234,9 @@ class StreamlitForceSaleClient:
                     
                 if st.button("📋 Transaction History"):
                     self.show_transaction_history()
+                    
+                # Debug toggle
+                st.session_state.debug_mode = st.checkbox("🔧 Debug Mode", value=False)
             else:
                 st.warning("⚠️ Please upload certificates to continue")
 
@@ -296,15 +302,6 @@ class StreamlitForceSaleClient:
         
         # Show receipt
         self.show_receipt(demo_data, demo_result)
-
-    # [Keep all the previous methods from the original implementation]
-    # validate_card_number, validate_expiry_date, format_card_display, 
-    # format_expiry_display, create_ssl_context, connect_to_server,
-    # build_force_sale_message, parse_visa_response, send_transaction,
-    # process_payment, handle_transaction_result, show_receipt, 
-    # generate_receipt_text, disconnect, test_connection, 
-    # show_transaction_history, render_main_header, render_payment_form, 
-    # validate_form_inputs
 
     def render_main_header(self):
         """Render main header"""
@@ -466,7 +463,7 @@ class StreamlitForceSaleClient:
             return f"Connection failed: {e}", False
 
     def build_force_sale_message(self, pan: str, amount: float, expiry: str, approval_code: str, merchant_name: str):
-        """Build Force Sale ISO message"""
+        """Build Force Sale ISO message - CORRECTED VERSION"""
         stan = str(st.session_state.stan_counter).zfill(6)
         st.session_state.stan_counter += 1
         
@@ -475,41 +472,32 @@ class StreamlitForceSaleClient:
         local_time = now.strftime("%H%M%S")
         local_date = now.strftime("%m%d")
         
-        # Store transaction data
-        st.session_state.last_transaction = {
-            "pan": pan,
-            "expiry": expiry,
-            "amount": amount,
-            "stan": stan,
-            "type": "Force Sale",
-            "merchant_name": merchant_name,
-            "timestamp": datetime.now(),
-            "approval_code": approval_code
-        }
-
-        # ISO 8583 data elements
+        # Convert 4-digit approval code to 6-digit auth code for DE 38
+        auth_code = approval_code.ljust(6, '0')  # Pad to 6 digits
+        
+        # ISO 8583 data elements - CORRECTED
         data_elements = {
-            2: pan,
-            3: "000000",
-            4: str(int(amount * 100)).zfill(12),
-            7: transmission_time,
-            11: stan,
-            12: local_time,
-            13: local_date,
-            14: expiry,
-            18: "5999",
-            22: "012",
-            24: "200",
-            25: "08",
-            32: "00000000001",
-            35: pan + "=" + expiry + "100",
-            37: stan + "FSL",
-            38: approval_code,
-            41: st.session_state.terminal_id,
-            42: st.session_state.merchant_id,
-            43: merchant_name.ljust(16)[:16],
-            49: "840",
-            60: "00108001",
+            2: pan,  # LLVAR field
+            3: "010000",  # CORRECTED: Processing Code for Force Sale
+            4: str(int(amount * 100)).zfill(12),  # Amount in cents
+            7: transmission_time,  # Transmission date & time
+            11: stan,  # Systems trace audit number
+            12: local_time,  # Local time
+            13: local_date,  # Local date
+            14: expiry,  # Expiration date
+            18: "5999",  # Merchant type
+            22: "012",  # POS entry mode - Manual key entry
+            24: "200",  # Function code - Force Sale
+            25: "08",  # POS condition code
+            32: "00000000001",  # Acquiring institution ID code
+            35: pan + "=" + expiry + "100",  # Track 2 data
+            37: stan + "FSL",  # Retrieval reference number
+            38: auth_code,  # CORRECTED: Approval code (6 characters)
+            41: st.session_state.terminal_id,  # Terminal ID
+            42: st.session_state.merchant_id,  # Merchant ID
+            43: merchant_name.ljust(40)[:40],  # Merchant name (40 chars)
+            49: "840",  # Currency code (USD)
+            60: "00108001",  # Additional data
         }
 
         # Build bitmap
@@ -520,32 +508,51 @@ class StreamlitForceSaleClient:
                 bit_index = 7 - ((field_num - 1) % 8)
                 bitmap[byte_index] |= (1 << bit_index)
 
-        mti = "0200"
+        mti = "0220"  # Financial transaction request
         bitmap_hex = bitmap.hex().upper()
 
-        # Build data string
+        # Build data string with proper length prefixes
         data_str = ""
         for field_num in sorted(data_elements.keys()):
             value = data_elements[field_num]
-            if field_num in [2, 32, 35]:
+            
+            # Handle variable length fields
+            if field_num in [2, 35, 32, 60]:  # LLVAR fields (2-digit length)
                 data_str += f"{len(value):02d}{value}"
-            elif field_num in [60]:
-                data_str += f"{len(value):03d}{value}"
-            else:
+            elif field_num in [43]:  # Fixed length field
+                data_str += value.ljust(40)[:40]  # Ensure exactly 40 chars
+            else:  # Fixed length fields
                 data_str += value
 
         iso_message = mti + bitmap_hex + data_str
         message_length = len(iso_message)
         length_prefix = struct.pack('>H', message_length)
         
+        # Debug output
+        if st.session_state.get('debug_mode', False):
+            st.sidebar.markdown("### 🔧 ISO 8583 Debug Info")
+            st.sidebar.markdown(f"""
+            <div class="debug-box">
+            <strong>Message Details:</strong><br>
+            MTI: {mti}<br>
+            Bitmap: {bitmap_hex}<br>
+            DE 3 (Processing): {data_elements[3]}<br>
+            DE 38 (Auth): {data_elements[38]}<br>
+            DE 4 (Amount): {data_elements[4]}<br>
+            Total Length: {message_length}<br>
+            STAN: {stan}
+            </div>
+            """, unsafe_allow_html=True)
+    
         return length_prefix + iso_message.encode('ascii')
 
     def parse_visa_response(self, response: bytes) -> Dict[str, Any]:
-        """Parse Visa response"""
+        """Parse Visa response - IMPROVED VERSION"""
         try:
             if len(response) < 4:
                 return {"error": "Response too short"}
                 
+            # Parse message length
             if len(response) > 2:
                 potential_length = struct.unpack('>H', response[:2])[0]
                 if potential_length == len(response) - 2:
@@ -555,6 +562,7 @@ class StreamlitForceSaleClient:
             
             result = {
                 "mti": response_str[0:4] if len(response_str) >= 4 else "",
+                "raw_response": response_str,
                 "length": len(response)
             }
             
@@ -568,27 +576,57 @@ class StreamlitForceSaleClient:
                 '14': 'ERROR - Invalid Card',
                 '51': 'DECLINED - Insufficient Funds',
                 '54': 'ERROR - Expired Card',
+                '55': 'ERROR - Invalid PIN',
+                '57': 'TRANSACTION NOT PERMITTED',
+                '58': 'TRANSACTION NOT PERMITTED',
+                '61': 'EXCEEDS WITHDRAWAL LIMIT',
+                '62': 'RESTRICTED CARD',
+                '65': 'EXCEEDS WITHDRAWAL FREQUENCY',
+                '75': 'EXCEEDS PIN TRIES',
+                '76': 'INVALID ROUTING',
                 '91': 'UNAVAILABLE - Issuer Unavailable',
                 '96': 'ERROR - System Malfunction'
             }
             
-            # Extract response code
+            # Extract response code (DE 39) - look for field 39 in the response
             if "39" in response_str:
                 idx = response_str.find("39")
                 if idx + 2 < len(response_str):
                     resp_code = response_str[idx+2:idx+4]
                     result["response_code"] = resp_code
-                    result["response_message"] = visa_codes.get(resp_code, "UNKNOWN")
+                    result["response_message"] = visa_codes.get(resp_code, f"UNKNOWN CODE: {resp_code}")
             
-            # Extract auth code
+            # Extract auth code (DE 38)
             if "38" in response_str:
                 idx = response_str.find("38")
                 if idx + 2 < len(response_str):
+                    # DE 38 is 6 characters fixed length
                     auth_code = response_str[idx+2:idx+8]
                     result["auth_code"] = auth_code
-                    if len(auth_code) >= 4:
-                        result["approval_code"] = auth_code[:4]
-                        result["full_auth_code"] = auth_code
+                    result["approval_code"] = auth_code[:4]  # First 4 digits
+                    result["full_auth_code"] = auth_code
+            
+            # If we didn't find structured fields, try to extract basic info
+            if "response_code" not in result and len(response_str) >= 4:
+                # Try to find response code at common positions
+                if len(response_str) > 20:
+                    # Common position for response code in ISO8583
+                    result["response_code"] = response_str[20:22] if len(response_str) > 22 else "XX"
+                    result["response_message"] = visa_codes.get(result["response_code"], "UNKNOWN")
+            
+            # Debug output
+            if st.session_state.get('debug_mode', False):
+                st.sidebar.markdown("### 🔧 Response Debug")
+                st.sidebar.markdown(f"""
+                <div class="debug-box">
+                <strong>Raw Response:</strong><br>
+                {response_str[:100]}...<br>
+                <strong>Parsed:</strong><br>
+                Response Code: {result.get('response_code', 'N/A')}<br>
+                Auth Code: {result.get('auth_code', 'N/A')}<br>
+                Message: {result.get('response_message', 'N/A')}
+                </div>
+                """, unsafe_allow_html=True)
             
             return result
             
@@ -610,8 +648,21 @@ class StreamlitForceSaleClient:
             else:
                 return {"error": "No response"}
                 
+        except socket.timeout:
+            return {"error": "Connection timeout - no response from server"}
         except Exception as e:
             return {"error": f"Send failed: {e}"}
+
+    def validate_iso_message(self, message_data: dict) -> list:
+        """Validate ISO 8583 data before sending"""
+        errors = []
+        
+        # Check DE 38 (Approval Code)
+        approval_code = message_data.get('approval_code', '')
+        if len(approval_code) != 4 or not approval_code.isdigit():
+            errors.append("DE 38: Approval code must be 4 digits")
+    
+        return errors
 
     def process_payment(self, form_data):
         """Process payment transaction"""
@@ -619,7 +670,14 @@ class StreamlitForceSaleClient:
         errors = self.validate_form_inputs(form_data)
         if errors:
             for error in errors:
-                st.error(error)
+                st.error(f"❌ {error}")
+            return
+        
+        # Validate ISO message
+        iso_errors = self.validate_iso_message(form_data)
+        if iso_errors:
+            for error in iso_errors:
+                st.error(f"❌ {error}")
             return
         
         # Check certificates
@@ -630,11 +688,15 @@ class StreamlitForceSaleClient:
             return
         
         # Clean inputs
-        clean_card, _ = self.validate_card_number(form_data['card_input'])
-        clean_expiry, _ = self.validate_expiry_date(form_data['expiry_input'])
+        card_valid, clean_card = self.validate_card_number(form_data['card_input'])
+        expiry_valid, clean_expiry = self.validate_expiry_date(form_data['expiry_input'])
+        
+        if not card_valid or not expiry_valid:
+            st.error("❌ Invalid card data")
+            return
         
         # Build message
-        with st.spinner("🔄 Building transaction message..."):
+        with st.spinner("🔄 Building ISO 8583 message..."):
             message = self.build_force_sale_message(
                 pan=clean_card,
                 amount=form_data['amount'],
@@ -647,7 +709,9 @@ class StreamlitForceSaleClient:
         with st.spinner("🔗 Connecting to payment server..."):
             connection_result, success = self.connect_to_server()
             if not success:
-                st.error(f"Connection failed: {connection_result}")
+                st.error(f"❌ Connection failed: {connection_result}")
+                if st.session_state.get('debug_mode', False):
+                    st.info("💡 Check server IP/port and certificate configuration")
                 return
         
         # Send transaction
@@ -662,8 +726,23 @@ class StreamlitForceSaleClient:
         """Handle transaction result"""
         if 'error' in result:
             st.error(f"❌ Transaction failed: {result['error']}")
+            
+            # Add failed transaction to history
+            transaction_record = {
+                'timestamp': datetime.now(),
+                'amount': form_data['amount'],
+                'card': self.format_card_display(form_data['card_input']),
+                'status': f"FAILED: {result['error']}",
+                'approval_code': 'N/A',
+                'response_code': 'ER',
+                'demo': False
+            }
+            st.session_state.transaction_history.append(transaction_record)
         else:
-            st.success("✅ Payment Approved!")
+            if result.get('response_code') == '00':
+                st.success("✅ Payment Approved!")
+            else:
+                st.warning(f"⚠️ {result.get('response_message', 'Transaction completed with warning')}")
             
             # Add to transaction history
             transaction_record = {
@@ -685,8 +764,10 @@ class StreamlitForceSaleClient:
         st.markdown("---")
         st.header("🧾 Payment Receipt")
         
+        status_color = "success-box" if result.get('response_code') == '00' else "receipt-box"
+        
         receipt_html = f"""
-        <div class="receipt-box success-box">
+        <div class="receipt-box {status_color}">
             <h3 style="text-align: center; margin-bottom: 20px;">FORCE SALE RECEIPT</h3>
             
             <table style="width: 100%; border-collapse: collapse;">
@@ -701,6 +782,10 @@ class StreamlitForceSaleClient:
             <tr>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Card Number:</strong></td>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{self.format_card_display(form_data['card_input'])}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Expiry:</strong></td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{self.format_expiry_display(form_data['expiry_input'])}</td>
             </tr>
             <tr>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Amount:</strong></td>
@@ -721,6 +806,10 @@ class StreamlitForceSaleClient:
             <tr>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Auth Code:</strong></td>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('full_auth_code', 'N/A')}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Response Code:</strong></td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('response_code', 'N/A')}</td>
             </tr>
             </table>
             
@@ -794,12 +883,20 @@ THANK YOU FOR YOUR BUSINESS
             
         for i, transaction in enumerate(reversed(st.session_state.transaction_history[-10:]), 1):
             demo_indicator = " (Demo)" if transaction.get('demo', False) else ""
-            with st.expander(f"Transaction {i} - ${transaction['amount']:.2f} - {transaction['timestamp'].strftime('%H:%M:%S')}{demo_indicator}"):
+            status_color = "✅" if transaction['status'].startswith('APPROVED') else "❌" if transaction['status'].startswith('FAILED') else "⚠️"
+            
+            with st.expander(f"{status_color} Transaction {i} - ${transaction['amount']:.2f} - {transaction['timestamp'].strftime('%H:%M:%S')}{demo_indicator}"):
                 st.write(f"**Card:** {transaction['card']}")
                 st.write(f"**Amount:** ${transaction['amount']:.2f}")
                 st.write(f"**Status:** {transaction['status']}")
                 st.write(f"**Approval Code:** {transaction['approval_code']}")
+                st.write(f"**Response Code:** {transaction['response_code']}")
                 st.write(f"**Time:** {transaction['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+                
+        # Clear history button
+        if st.button("🗑️ Clear History"):
+            st.session_state.transaction_history = []
+            st.rerun()
 
     def run(self):
         """Main application runner"""
