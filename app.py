@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Professional Payment Terminal Web Application
-With Flexible Approval Code Length (4 or 6 digits)
+For ONLINE Transactions with 4-Digit Approval Codes
 """
 
 import streamlit as st
@@ -34,9 +34,9 @@ if not st.session_state.authenticated:
     st.stop()
 # === END PASSWORD PROTECTION ===
 
-class StreamlitForceSaleClient:
+class StreamlitOnlineSaleClient:
     """
-    Complete Force Sale Client with Flexible Approval Code Length
+    Online Sale Client with 4-Digit Approval Codes
     """
     
     def __init__(self):
@@ -53,8 +53,8 @@ class StreamlitForceSaleClient:
             st.session_state.transaction_history = []
         if 'cert_files_uploaded' not in st.session_state:
             st.session_state.cert_files_uploaded = False
-        if 'approval_code_length' not in st.session_state:
-            st.session_state.approval_code_length = "6-digit"  # Default to 6-digit
+        # Force 4-digit for online transactions
+        st.session_state.approval_code_length = "4-digit"
             
         self.SERVERS = {
             'primary': {'host': '102.163.40.20', 'port': 8090},
@@ -231,17 +231,8 @@ class StreamlitForceSaleClient:
                     st.error("❌ " + cert_message)
                 
                 st.subheader("Transaction Configuration")
-                
-                # Approval Code Length Selection
-                approval_length = st.selectbox(
-                    "Approval Code Format",
-                    ["6-digit", "4-digit"],
-                    help="Choose between 6-digit (standard) or 4-digit approval codes",
-                    index=0 if st.session_state.approval_code_length == "6-digit" else 1
-                )
-                st.session_state.approval_code_length = approval_length
-                
-                st.info(f"**Current Format:** {approval_length} approval codes")
+                st.info("🟢 **Online Transaction Mode**")
+                st.info("🔑 **4-Digit Approval Codes**")
                 
                 st.subheader("Server Configuration")
                 server_choice = st.selectbox(
@@ -299,14 +290,14 @@ class StreamlitForceSaleClient:
             'card_input': '4111111111111111',
             'expiry_input': '1225',
             'amount': 25.00,
-            'approval_input': '123456' if st.session_state.approval_code_length == "6-digit" else '1234',
+            'approval_input': '1234',
             'merchant_name': 'Demo Store'
         }
         
         demo_result = {
             'response_message': 'APPROVED - Demo Transaction',
-            'approval_code': '123456' if st.session_state.approval_code_length == "6-digit" else '1234',
-            'full_auth_code': '123456',
+            'approval_code': '1234',
+            'full_auth_code': '123400',
             'response_code': '00'
         }
         
@@ -318,7 +309,6 @@ class StreamlitForceSaleClient:
             'status': demo_result['response_message'],
             'approval_code': demo_result['approval_code'],
             'response_code': demo_result['response_code'],
-            'approval_format': st.session_state.approval_code_length,
             'demo': True
         }
         st.session_state.transaction_history.append(transaction_record)
@@ -328,14 +318,14 @@ class StreamlitForceSaleClient:
 
     def render_main_header(self):
         """Render main header"""
-        st.markdown('<div class="main-header">💳 Professional Payment Terminal</div>', 
+        st.markdown('<div class="main-header">💳 Online Payment Terminal</div>', 
                    unsafe_allow_html=True)
         
         # Show current configuration
         st.markdown(f"""
         <div class="config-box">
-            <strong>Current Configuration:</strong><br>
-            • Approval Code Format: <strong>{st.session_state.approval_code_length}</strong><br>
+            <strong>Transaction Mode: 🟢 ONLINE</strong><br>
+            • <strong>4-Digit Approval Codes</strong> (Standard Online Auth)<br>
             • Merchant ID: {st.session_state.merchant_id}<br>
             • Terminal ID: {st.session_state.terminal_id}
         </div>
@@ -369,15 +359,11 @@ class StreamlitForceSaleClient:
         return True, clean_expiry
 
     def validate_approval_code(self, approval_input: str) -> Tuple[bool, str]:
-        """Validate approval code based on selected format"""
+        """Validate 4-digit approval code"""
         clean_code = re.sub(r'\D', '', approval_input)
         
-        if st.session_state.approval_code_length == "6-digit":
-            if len(clean_code) != 6:
-                return False, f"6-digit approval code must be exactly 6 digits (you entered {len(clean_code)})"
-        else:  # 4-digit
-            if len(clean_code) != 4:
-                return False, f"4-digit approval code must be exactly 4 digits (you entered {len(clean_code)})"
+        if len(clean_code) != 4:
+            return False, f"Approval code must be exactly 4 digits (you entered {len(clean_code)})"
         
         if not clean_code.isdigit():
             return False, "Approval code must contain only digits"
@@ -415,14 +401,11 @@ class StreamlitForceSaleClient:
                 format="%.2f"
             )
             
-            # Approval Code - dynamic placeholder based on selection
-            approval_placeholder = "123456" if st.session_state.approval_code_length == "6-digit" else "1234"
-            approval_help = f"Enter {st.session_state.approval_code_length} approval code"
-            
+            # Approval Code - 4-digit only for online transactions
             approval_input = st.text_input(
-                f"✅ Approval Code ({st.session_state.approval_code_length})",
-                placeholder=approval_placeholder,
-                help=approval_help
+                "✅ Approval Code (4 digits)",
+                placeholder="1234",
+                help="Enter 4-digit online approval code from issuer"
             )
             
             # Merchant Name
@@ -517,8 +500,8 @@ class StreamlitForceSaleClient:
         except Exception as e:
             return f"Connection failed: {e}", False
 
-    def build_force_sale_message(self, pan: str, amount: float, expiry: str, approval_code: str, merchant_name: str):
-        """Build Force Sale ISO message with flexible approval code length"""
+    def build_online_sale_message(self, pan: str, amount: float, expiry: str, approval_code: str, merchant_name: str):
+        """Build Online Sale ISO message with 4-digit approval codes"""
         stan = str(st.session_state.stan_counter).zfill(6)
         st.session_state.stan_counter += 1
         
@@ -527,18 +510,13 @@ class StreamlitForceSaleClient:
         local_time = now.strftime("%H%M%S")
         local_date = now.strftime("%m%d")
         
-        # Handle approval code based on selected format
-        if st.session_state.approval_code_length == "6-digit":
-            # Use 6-digit code directly
-            auth_code = approval_code
-        else:
-            # For 4-digit codes, pad to 6 digits for ISO 8583
-            auth_code = approval_code.ljust(6, '0')
+        # For online transactions: pad 4-digit code to 6 digits for ISO 8583
+        auth_code = approval_code.ljust(6, '0')
         
-        # ISO 8583 data elements
+        # ISO 8583 data elements - ONLINE TRANSACTION
         data_elements = {
             2: pan,  # LLVAR field
-            3: "010000",  # Processing Code for Force Sale
+            3: "000000",  # CORRECTED: Processing Code for Purchase (not Force Sale)
             4: str(int(amount * 100)).zfill(12),  # Amount in cents
             7: transmission_time,  # Transmission date & time
             11: stan,  # Systems trace audit number
@@ -547,12 +525,12 @@ class StreamlitForceSaleClient:
             14: expiry,  # Expiration date
             18: "5999",  # Merchant type
             22: "012",  # POS entry mode - Manual key entry
-            24: "200",  # Function code - Force Sale
-            25: "08",  # POS condition code
+            24: "00",  # CORRECTED: Function code - Purchase (not Force Sale)
+            25: "00",  # CORRECTED: POS condition code - Normal presentment
             32: "00000000001",  # Acquiring institution ID code
             35: pan + "=" + expiry + "100",  # Track 2 data
-            37: stan + "FSL",  # Retrieval reference number
-            38: auth_code,  # Approval code (6 characters always for ISO 8583)
+            37: stan + "ONL",  # Retrieval reference number
+            38: auth_code,  # Approval code (4-digit padded to 6)
             41: st.session_state.terminal_id,  # Terminal ID
             42: st.session_state.merchant_id,  # Merchant ID
             43: merchant_name.ljust(40)[:40],  # Merchant name (40 chars)
@@ -568,7 +546,7 @@ class StreamlitForceSaleClient:
                 bit_index = 7 - ((field_num - 1) % 8)
                 bitmap[byte_index] |= (1 << bit_index)
 
-        mti = "0220"  # Financial transaction request
+        mti = "0200"  # Financial transaction request
         bitmap_hex = bitmap.hex().upper()
 
         # Build data string with proper length prefixes
@@ -594,15 +572,13 @@ class StreamlitForceSaleClient:
             st.sidebar.markdown(f"""
             <div class="debug-box">
             <strong>Message Details:</strong><br>
+            Transaction Type: <strong>ONLINE SALE</strong><br>
             MTI: {mti}<br>
-            Bitmap: {bitmap_hex}<br>
             DE 3 (Processing): {data_elements[3]}<br>
+            DE 24 (Function): {data_elements[24]}<br>
             DE 38 (Auth): {data_elements[38]}<br>
-            DE 4 (Amount): {data_elements[4]}<br>
-            Approval Format: {st.session_state.approval_code_length}<br>
             Input Code: {approval_code}<br>
             Sent Code: {auth_code}<br>
-            Total Length: {message_length}<br>
             STAN: {stan}
             </div>
             """, unsafe_allow_html=True)
@@ -626,13 +602,12 @@ class StreamlitForceSaleClient:
             result = {
                 "mti": response_str[0:4] if len(response_str) >= 4 else "",
                 "raw_response": response_str,
-                "length": len(response),
-                "approval_format": st.session_state.approval_code_length
+                "length": len(response)
             }
             
             # Visa response codes
             visa_codes = {
-                '00': 'APPROVED - Force Sale Completed',
+                '00': 'APPROVED - Transaction Completed',
                 '01': 'REFER TO ISSUER', 
                 '05': 'DECLINED - Do Not Honor',
                 '12': 'ERROR - Invalid Transaction',
@@ -668,12 +643,8 @@ class StreamlitForceSaleClient:
                     auth_code = response_str[idx+2:idx+8]
                     result["auth_code"] = auth_code
                     
-                    # Format approval code based on user selection
-                    if st.session_state.approval_code_length == "6-digit":
-                        result["approval_code"] = auth_code  # Use full 6 digits
-                    else:
-                        result["approval_code"] = auth_code[:4]  # Use first 4 digits
-                    
+                    # For online transactions, show only first 4 digits
+                    result["approval_code"] = auth_code[:4]  # First 4 digits only
                     result["full_auth_code"] = auth_code
             
             # If we didn't find structured fields, try to extract basic info
@@ -687,13 +658,10 @@ class StreamlitForceSaleClient:
                 st.sidebar.markdown("### 🔧 Response Debug")
                 st.sidebar.markdown(f"""
                 <div class="debug-box">
-                <strong>Raw Response:</strong><br>
-                {response_str[:100]}...<br>
-                <strong>Parsed:</strong><br>
+                <strong>Parsed Response:</strong><br>
                 Response Code: {result.get('response_code', 'N/A')}<br>
-                Auth Code: {result.get('auth_code', 'N/A')}<br>
                 Approval Code: {result.get('approval_code', 'N/A')}<br>
-                Format: {result.get('approval_format', 'N/A')}<br>
+                Full Auth Code: {result.get('full_auth_code', 'N/A')}<br>
                 Message: {result.get('response_message', 'N/A')}
                 </div>
                 """, unsafe_allow_html=True)
@@ -723,31 +691,12 @@ class StreamlitForceSaleClient:
         except Exception as e:
             return {"error": f"Send failed: {e}"}
 
-    def validate_iso_message(self, form_data):
-        """Validate ISO 8583 data before sending"""
-        errors = []
-        
-        # Validate approval code based on selected format
-        approval_code = form_data.get('approval_input', '')
-        valid, message = self.validate_approval_code(approval_code)
-        if not valid:
-            errors.append(f"Approval Code: {message}")
-    
-        return errors
-
     def process_payment(self, form_data):
         """Process payment transaction"""
         # Validate inputs
         errors = self.validate_form_inputs(form_data)
         if errors:
             for error in errors:
-                st.error(f"❌ {error}")
-            return
-        
-        # Validate ISO message
-        iso_errors = self.validate_iso_message(form_data)
-        if iso_errors:
-            for error in iso_errors:
                 st.error(f"❌ {error}")
             return
         
@@ -768,8 +717,8 @@ class StreamlitForceSaleClient:
             return
         
         # Build message
-        with st.spinner("🔄 Building ISO 8583 message..."):
-            message = self.build_force_sale_message(
+        with st.spinner("🔄 Building Online Sale message..."):
+            message = self.build_online_sale_message(
                 pan=clean_card,
                 amount=form_data['amount'],
                 expiry=clean_expiry,
@@ -787,7 +736,7 @@ class StreamlitForceSaleClient:
                 return
         
         # Send transaction
-        with st.spinner("📤 Processing payment..."):
+        with st.spinner("📤 Processing online payment..."):
             result = self.send_transaction(message)
             self.disconnect()
         
@@ -807,13 +756,12 @@ class StreamlitForceSaleClient:
                 'status': f"FAILED: {result['error']}",
                 'approval_code': 'N/A',
                 'response_code': 'ER',
-                'approval_format': st.session_state.approval_code_length,
                 'demo': False
             }
             st.session_state.transaction_history.append(transaction_record)
         else:
             if result.get('response_code') == '00':
-                st.success("✅ Payment Approved!")
+                st.success("✅ Online Payment Approved!")
             else:
                 st.warning(f"⚠️ {result.get('response_message', 'Transaction completed with warning')}")
             
@@ -825,7 +773,6 @@ class StreamlitForceSaleClient:
                 'status': result.get('response_message', 'Unknown'),
                 'approval_code': result.get('approval_code', 'N/A'),
                 'response_code': result.get('response_code', 'N/A'),
-                'approval_format': st.session_state.approval_code_length,
                 'demo': False
             }
             st.session_state.transaction_history.append(transaction_record)
@@ -836,13 +783,13 @@ class StreamlitForceSaleClient:
     def show_receipt(self, form_data, result):
         """Show payment receipt"""
         st.markdown("---")
-        st.header("🧾 Payment Receipt")
+        st.header("🧾 Online Payment Receipt")
         
         status_color = "success-box" if result.get('response_code') == '00' else "receipt-box"
         
         receipt_html = f"""
         <div class="receipt-box {status_color}">
-            <h3 style="text-align: center; margin-bottom: 20px;">FORCE SALE RECEIPT</h3>
+            <h3 style="text-align: center; margin-bottom: 20px;">ONLINE PAYMENT RECEIPT</h3>
             
             <table style="width: 100%; border-collapse: collapse;">
             <tr>
@@ -854,8 +801,8 @@ class StreamlitForceSaleClient:
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.terminal_id}</td>
             </tr>
             <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Approval Format:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.approval_code_length}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Transaction Type:</strong></td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;">🟢 Online Sale</td>
             </tr>
             <tr>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Card Number:</strong></td>
@@ -882,10 +829,6 @@ class StreamlitForceSaleClient:
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('approval_code', 'N/A')}</td>
             </tr>
             <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Full Auth Code:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('full_auth_code', 'N/A')}</td>
-            </tr>
-            <tr>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Response Code:</strong></td>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('response_code', 'N/A')}</td>
             </tr>
@@ -909,22 +852,21 @@ class StreamlitForceSaleClient:
     def generate_receipt_text(self, form_data, result):
         """Generate receipt text for download"""
         return f"""
-FORCE SALE RECEIPT
-==================
+ONLINE PAYMENT RECEIPT
+=====================
 Merchant: {form_data['merchant_name']}
 Terminal ID: {st.session_state.terminal_id}
 Merchant ID: {st.session_state.merchant_id}
-Approval Format: {st.session_state.approval_code_length}
-------------------
+Transaction Type: Online Sale
+-----------------------------
 Card: {self.format_card_display(form_data['card_input'])}
 Expiry: {self.format_expiry_display(form_data['expiry_input'])}
 Amount: ${form_data['amount']:.2f}
 Date/Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Status: {result.get('response_message', 'Unknown')}
 Approval Code: {result.get('approval_code', 'N/A')}
-Full Auth Code: {result.get('full_auth_code', 'N/A')}
 Response Code: {result.get('response_code', 'N/A')}
-==================
+=====================
 THANK YOU FOR YOUR BUSINESS
 """
 
@@ -962,15 +904,13 @@ THANK YOU FOR YOUR BUSINESS
             
         for i, transaction in enumerate(reversed(st.session_state.transaction_history[-10:]), 1):
             demo_indicator = " (Demo)" if transaction.get('demo', False) else ""
-            format_indicator = f" [{transaction.get('approval_format', 'N/A')}]"
             status_color = "✅" if transaction['status'].startswith('APPROVED') else "❌" if transaction['status'].startswith('FAILED') else "⚠️"
             
-            with st.expander(f"{status_color} Transaction {i} - ${transaction['amount']:.2f} - {transaction['timestamp'].strftime('%H:%M:%S')}{demo_indicator}{format_indicator}"):
+            with st.expander(f"{status_color} Transaction {i} - ${transaction['amount']:.2f} - {transaction['timestamp'].strftime('%H:%M:%S')}{demo_indicator}"):
                 st.write(f"**Card:** {transaction['card']}")
                 st.write(f"**Amount:** ${transaction['amount']:.2f}")
                 st.write(f"**Status:** {transaction['status']}")
                 st.write(f"**Approval Code:** {transaction['approval_code']}")
-                st.write(f"**Approval Format:** {transaction.get('approval_format', 'N/A')}")
                 st.write(f"**Response Code:** {transaction['response_code']}")
                 st.write(f"**Time:** {transaction['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
                 
@@ -997,12 +937,12 @@ THANK YOU FOR YOUR BUSINESS
             # Process payment button
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
-                if st.button("🚀 Process Force Sale", type="primary", use_container_width=True):
+                if st.button("🚀 Process Online Payment", type="primary", use_container_width=True):
                     self.process_payment(form_data)
 
 def main():
     """Main function"""
-    client = StreamlitForceSaleClient()
+    client = StreamlitOnlineSaleClient()
     client.run()
 
 if __name__ == "__main__":
