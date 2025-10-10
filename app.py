@@ -23,7 +23,7 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.title("🔒 Payment Terminal")
+    st.title("🔒 ISO-8583 Base I Terminal")
     password = st.text_input("Enter Password", type="password")
     if st.button("Access System"):
         if hashlib.sha256(password.encode()).hexdigest() == APP_PASSWORD_HASH:
@@ -82,7 +82,7 @@ class StreamlitOnlineSaleClient:
     def setup_page(self):
         """Configure Streamlit page"""
         st.set_page_config(
-            page_title="Professional Payment Terminal",
+            page_title="ISO-8583 Base I Terminal",
             page_icon="💳",
             layout="wide",
             initial_sidebar_state="expanded"
