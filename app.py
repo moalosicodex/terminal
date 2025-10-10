@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Professional Payment Terminal Web Application
-For ONLINE Transactions with 4-Digit Approval Codes
+With Manual Server Configuration and Protocol Selection
 """
 
 import streamlit as st
@@ -36,7 +36,7 @@ if not st.session_state.authenticated:
 
 class StreamlitOnlineSaleClient:
     """
-    Online Sale Client with 4-Digit Approval Codes
+    Online Sale Client with Manual Server Configuration
     """
     
     def __init__(self):
@@ -55,12 +55,22 @@ class StreamlitOnlineSaleClient:
             st.session_state.cert_files_uploaded = False
         # Force 4-digit for online transactions
         st.session_state.approval_code_length = "4-digit"
-            
-        self.SERVERS = {
-            'primary': {'host': '102.163.40.20', 'port': 8090},
-            'secondary': {'host': '10.252.251.5', 'port': 8080}
-        }
         
+        # Server configuration with defaults
+        if 'server_config' not in st.session_state:
+            st.session_state.server_config = {
+                'primary': {
+                    'host': '102.163.40.20',
+                    'port': 8090,
+                    'protocol': 'HTTPS'
+                },
+                'secondary': {
+                    'host': '10.252.251.5', 
+                    'port': 8080,
+                    'protocol': 'HTTPS'
+                }
+            }
+            
         # Create certs directory if it doesn't exist
         self.CERT_DIR = "./certs"
         os.makedirs(self.CERT_DIR, exist_ok=True)
@@ -127,6 +137,13 @@ class StreamlitOnlineSaleClient:
             margin: 10px 0;
             background-color: #d1ecf1;
         }
+        .server-config-box {
+            border: 1px solid #6f42c1;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px 0;
+            background-color: #e9ecef;
+        }
         </style>
         """, unsafe_allow_html=True)
 
@@ -192,6 +209,116 @@ class StreamlitOnlineSaleClient:
         
         return False
 
+    def render_server_configuration(self):
+        """Render server configuration section"""
+        st.sidebar.subheader("🌐 Server Configuration")
+        
+        with st.sidebar.expander("🔧 Configure Servers", expanded=True):
+            st.markdown("### Primary Server")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                primary_protocol = st.selectbox(
+                    "Protocol",
+                    ["HTTPS", "HTTP"],
+                    index=0,
+                    key="primary_protocol"
+                )
+            
+            with col2:
+                primary_port = st.number_input(
+                    "Port",
+                    min_value=1,
+                    max_value=65535,
+                    value=8090,
+                    key="primary_port"
+                )
+            
+            primary_host = st.text_input(
+                "Primary Server Host/IP",
+                value="102.163.40.20",
+                key="primary_host"
+            )
+            
+            st.markdown("### Secondary Server")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                secondary_protocol = st.selectbox(
+                    "Protocol", 
+                    ["HTTPS", "HTTP"],
+                    index=0,
+                    key="secondary_protocol"
+                )
+            
+            with col2:
+                secondary_port = st.number_input(
+                    "Port",
+                    min_value=1,
+                    max_value=65535, 
+                    value=8080,
+                    key="secondary_port"
+                )
+            
+            secondary_host = st.text_input(
+                "Secondary Server Host/IP",
+                value="10.252.251.5",
+                key="secondary_host"
+            )
+            
+            # Save server configuration
+            if st.button("💾 Save Server Config"):
+                st.session_state.server_config = {
+                    'primary': {
+                        'host': primary_host,
+                        'port': primary_port,
+                        'protocol': primary_protocol
+                    },
+                    'secondary': {
+                        'host': secondary_host,
+                        'port': secondary_port,
+                        'protocol': secondary_protocol
+                    }
+                }
+                st.success("✅ Server configuration saved!")
+                
+        # Display current configuration
+        st.sidebar.markdown("### Current Server Config")
+        config = st.session_state.server_config
+        st.sidebar.markdown(f"""
+        <div class="server-config-box">
+        <strong>Primary:</strong><br>
+        {config['primary']['protocol']}://{config['primary']['host']}:{config['primary']['port']}<br>
+        <strong>Secondary:</strong><br>  
+        {config['secondary']['protocol']}://{config['secondary']['host']}:{config['secondary']['port']}
+        </div>
+        """, unsafe_allow_html=True)
+
+    def render_merchant_configuration(self):
+        """Render merchant configuration section"""
+        st.sidebar.subheader("🏪 Merchant Configuration")
+        
+        with st.sidebar.expander("📝 Configure Merchant", expanded=True):
+            merchant_id = st.text_input(
+                "Merchant ID",
+                value=st.session_state.merchant_id,
+                help="Your unique merchant identification number"
+            )
+            
+            terminal_id = st.text_input(
+                "Terminal ID", 
+                value=st.session_state.terminal_id,
+                help="Your terminal identification number"
+            )
+            
+            if st.button("💾 Save Merchant Config"):
+                if merchant_id and terminal_id:
+                    st.session_state.merchant_id = merchant_id
+                    st.session_state.terminal_id = terminal_id
+                    st.success("✅ Merchant configuration saved!")
+                else:
+                    st.error("❌ Please fill in both Merchant ID and Terminal ID")
+
     def check_certificates(self):
         """Check if certificates exist and are valid"""
         if not os.path.exists(self.CLIENT_CERT) or not os.path.exists(self.CLIENT_KEY):
@@ -213,33 +340,24 @@ class StreamlitOnlineSaleClient:
     def render_sidebar(self):
         """Render sidebar with merchant info and settings"""
         with st.sidebar:
-            st.title("⚙️ Merchant Setup")
+            st.title("⚙️ Terminal Configuration")
+            
+            # Merchant configuration
+            self.render_merchant_configuration()
+            
+            # Server configuration  
+            self.render_server_configuration()
             
             # Certificate upload section
             certs_ready = self.render_certificate_upload()
             
             if certs_ready:
-                st.subheader("Account Information")
-                st.info(f"**Merchant ID:** {st.session_state.merchant_id}")
-                st.info(f"**Terminal ID:** {st.session_state.terminal_id}")
-                
                 st.subheader("Certificate Status")
                 cert_valid, cert_message = self.check_certificates()
                 if cert_valid:
                     st.success("✅ " + cert_message)
                 else:
                     st.error("❌ " + cert_message)
-                
-                st.subheader("Transaction Configuration")
-                st.info("🟢 **Online Transaction Mode**")
-                st.info("🔑 **4-Digit Approval Codes**")
-                
-                st.subheader("Server Configuration")
-                server_choice = st.selectbox(
-                    "Select Server",
-                    ["Primary", "Secondary"],
-                    help="Choose which payment server to use"
-                )
                 
                 st.subheader("Quick Actions")
                 if st.button("🔄 Test Connection"):
@@ -322,12 +440,15 @@ class StreamlitOnlineSaleClient:
                    unsafe_allow_html=True)
         
         # Show current configuration
+        config = st.session_state.server_config
         st.markdown(f"""
         <div class="config-box">
             <strong>Transaction Mode: 🟢 ONLINE</strong><br>
             • <strong>4-Digit Approval Codes</strong> (Standard Online Auth)<br>
             • Merchant ID: {st.session_state.merchant_id}<br>
-            • Terminal ID: {st.session_state.terminal_id}
+            • Terminal ID: {st.session_state.terminal_id}<br>
+            • Primary Server: {config['primary']['protocol']}://{config['primary']['host']}:{config['primary']['port']}<br>
+            • Secondary Server: {config['secondary']['protocol']}://{config['secondary']['host']}:{config['secondary']['port']}
         </div>
         """, unsafe_allow_html=True)
         
@@ -415,6 +536,17 @@ class StreamlitOnlineSaleClient:
                 help="Business name for receipt"
             )
         
+        # Server selection
+        st.subheader("🌐 Server Selection")
+        server_choice = st.radio(
+            "Select server to use:",
+            ["Primary Server", "Secondary Server"],
+            horizontal=True,
+            help="Choose which payment server to connect to"
+        )
+        
+        st.session_state.selected_server = server_choice.lower().replace(" ", "_")
+        
         return {
             'card_input': card_input,
             'expiry_input': expiry_input,
@@ -476,26 +608,35 @@ class StreamlitOnlineSaleClient:
             return f"Certificate error: {e}", False
 
     def connect_to_server(self, server_type: str = 'primary'):
-        """Connect to payment server"""
+        """Connect to payment server with protocol support"""
         try:
-            server = self.SERVERS[server_type]
+            server_config = st.session_state.server_config[server_type]
             
-            raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            raw_socket.settimeout(10)
-            
-            ssl_context, success = self.create_ssl_context()
-            if not success:
-                return ssl_context, False
+            # Check if HTTP is selected (no SSL)
+            if server_config['protocol'] == 'HTTP':
+                st.warning("🔓 Using HTTP connection (not secure)")
+                self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.connection.settimeout(10)
+                self.connection.connect((server_config['host'], server_config['port']))
+                return "Connected successfully via HTTP", True
+            else:
+                # HTTPS with SSL
+                raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                raw_socket.settimeout(10)
                 
-            self.connection = ssl_context.wrap_socket(
-                raw_socket,
-                server_hostname=server['host']
-            )
-            
-            self.connection.settimeout(10)
-            self.connection.connect((server['host'], server['port']))
-            
-            return "Connected successfully", True
+                ssl_context, success = self.create_ssl_context()
+                if not success:
+                    return ssl_context, False
+                    
+                self.connection = ssl_context.wrap_socket(
+                    raw_socket,
+                    server_hostname=server_config['host']
+                )
+                
+                self.connection.settimeout(10)
+                self.connection.connect((server_config['host'], server_config['port']))
+                
+                return "Connected successfully via HTTPS", True
             
         except Exception as e:
             return f"Connection failed: {e}", False
@@ -516,7 +657,7 @@ class StreamlitOnlineSaleClient:
         # ISO 8583 data elements - ONLINE TRANSACTION
         data_elements = {
             2: pan,  # LLVAR field
-            3: "000000",  # CORRECTED: Processing Code for Purchase (not Force Sale)
+            3: "000000",  # Processing Code for Purchase
             4: str(int(amount * 100)).zfill(12),  # Amount in cents
             7: transmission_time,  # Transmission date & time
             11: stan,  # Systems trace audit number
@@ -525,8 +666,8 @@ class StreamlitOnlineSaleClient:
             14: expiry,  # Expiration date
             18: "5999",  # Merchant type
             22: "012",  # POS entry mode - Manual key entry
-            24: "00",  # CORRECTED: Function code - Purchase (not Force Sale)
-            25: "00",  # CORRECTED: POS condition code - Normal presentment
+            24: "00",  # Function code - Purchase
+            25: "00",  # POS condition code - Normal presentment
             32: "00000000001",  # Acquiring institution ID code
             35: pan + "=" + expiry + "100",  # Track 2 data
             37: stan + "ONL",  # Retrieval reference number
@@ -568,17 +709,22 @@ class StreamlitOnlineSaleClient:
         
         # Debug output
         if st.session_state.get('debug_mode', False):
+            selected_server = st.session_state.get('selected_server', 'primary')
+            server_config = st.session_state.server_config[selected_server]
             st.sidebar.markdown("### 🔧 ISO 8583 Debug Info")
             st.sidebar.markdown(f"""
             <div class="debug-box">
             <strong>Message Details:</strong><br>
             Transaction Type: <strong>ONLINE SALE</strong><br>
+            Server: {selected_server.upper()} ({server_config['protocol']})<br>
             MTI: {mti}<br>
             DE 3 (Processing): {data_elements[3]}<br>
             DE 24 (Function): {data_elements[24]}<br>
             DE 38 (Auth): {data_elements[38]}<br>
             Input Code: {approval_code}<br>
             Sent Code: {auth_code}<br>
+            Merchant ID: {st.session_state.merchant_id}<br>
+            Terminal ID: {st.session_state.terminal_id}<br>
             STAN: {stan}
             </div>
             """, unsafe_allow_html=True)
@@ -726,13 +872,17 @@ class StreamlitOnlineSaleClient:
                 merchant_name=form_data['merchant_name']
             )
         
+        # Get selected server
+        selected_server = st.session_state.get('selected_server', 'primary')
+        server_config = st.session_state.server_config[selected_server]
+        
         # Connect and send
-        with st.spinner("🔗 Connecting to payment server..."):
-            connection_result, success = self.connect_to_server()
+        with st.spinner(f"🔗 Connecting to {selected_server.upper()} server via {server_config['protocol']}..."):
+            connection_result, success = self.connect_to_server(selected_server)
             if not success:
                 st.error(f"❌ Connection failed: {connection_result}")
                 if st.session_state.get('debug_mode', False):
-                    st.info("💡 Check server IP/port and certificate configuration")
+                    st.info("💡 Check server configuration and certificate setup")
                 return
         
         # Send transaction
@@ -799,6 +949,10 @@ class StreamlitOnlineSaleClient:
             <tr>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Terminal ID:</strong></td>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.terminal_id}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Merchant ID:</strong></td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.merchant_id}</td>
             </tr>
             <tr>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Transaction Type:</strong></td>
@@ -885,14 +1039,17 @@ THANK YOU FOR YOUR BUSINESS
         if not cert_valid:
             st.error(f"❌ {cert_message}")
             return
-            
-        with st.spinner("Testing connection..."):
-            result, success = self.connect_to_server()
-            if success:
-                st.success("✅ Connection successful!")
-                self.disconnect()
-            else:
-                st.error(f"❌ {result}")
+        
+        # Test both servers
+        for server_name in ['primary', 'secondary']:
+            st.write(f"Testing {server_name} server...")
+            with st.spinner(f"Connecting to {server_name} server..."):
+                result, success = self.connect_to_server(server_name)
+                if success:
+                    st.success(f"✅ {server_name.upper()} Server: Connected successfully!")
+                    self.disconnect()
+                else:
+                    st.error(f"❌ {server_name.upper()} Server: {result}")
 
     def show_transaction_history(self):
         """Show transaction history"""
