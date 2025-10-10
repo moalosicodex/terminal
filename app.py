@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Professional Payment Terminal Web Application
-With Manual Server Configuration and Protocol Selection
+ISO-8583 Base I Terminal
+Online Authorization with Protocol 101.1
 """
 
 import streamlit as st
@@ -13,7 +13,6 @@ import re
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 import time
-import base64
 import hashlib
 
 # === PASSWORD PROTECTION === 
@@ -34,9 +33,10 @@ if not st.session_state.authenticated:
     st.stop()
 # === END PASSWORD PROTECTION ===
 
-class StreamlitOnlineSaleClient:
+class ISO8583BaseITerminal:
     """
-    Online Sale Client with Manual Server Configuration
+    ISO-8583 Base I Terminal - Protocol 101.1
+    Online Authorization with 4-Digit Approval Codes
     """
     
     def __init__(self):
@@ -53,8 +53,6 @@ class StreamlitOnlineSaleClient:
             st.session_state.transaction_history = []
         if 'cert_files_uploaded' not in st.session_state:
             st.session_state.cert_files_uploaded = False
-        # Force 4-digit for online transactions
-        st.session_state.approval_code_length = "4-digit"
         
         # Server configuration with defaults
         if 'server_config' not in st.session_state:
@@ -95,14 +93,28 @@ class StreamlitOnlineSaleClient:
             font-size: 2.5rem;
             color: #1f77b4;
             text-align: center;
+            margin-bottom: 1rem;
+        }
+        .sub-header {
+            font-size: 1.2rem;
+            color: #6c757d;
+            text-align: center;
             margin-bottom: 2rem;
         }
-        .receipt-box {
-            border: 2px solid #1f77b4;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 10px 0;
-            background-color: #f0f8ff;
+        .receipt-popup {
+            border: 3px solid #1f77b4;
+            border-radius: 15px;
+            padding: 25px;
+            margin: 20px 0;
+            background-color: #f8f9fa;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .receipt-header {
+            text-align: center;
+            color: #1f77b4;
+            border-bottom: 2px solid #dee2e6;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
         }
         .success-box {
             border: 2px solid #28a745;
@@ -143,6 +155,14 @@ class StreamlitOnlineSaleClient:
             padding: 15px;
             margin: 10px 0;
             background-color: #e9ecef;
+        }
+        .protocol-badge {
+            background-color: #17a2b8;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: bold;
         }
         </style>
         """, unsafe_allow_html=True)
@@ -436,15 +456,17 @@ class StreamlitOnlineSaleClient:
 
     def render_main_header(self):
         """Render main header"""
-        st.markdown('<div class="main-header">💳 Online Payment Terminal</div>', 
+        st.markdown('<div class="main-header">ISO-8583 Base I Terminal</div>', 
+                   unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">Online Authorization with Protocol 101.1</div>',
                    unsafe_allow_html=True)
         
         # Show current configuration
         config = st.session_state.server_config
         st.markdown(f"""
         <div class="config-box">
-            <strong>Transaction Mode: 🟢 ONLINE</strong><br>
-            • <strong>4-Digit Approval Codes</strong> (Standard Online Auth)<br>
+            <strong>🟢 Online Authorization Mode</strong><br>
+            • <strong>4-Digit Approval Codes</strong> (Protocol 101.1)<br>
             • Merchant ID: {st.session_state.merchant_id}<br>
             • Terminal ID: {st.session_state.terminal_id}<br>
             • Primary Server: {config['primary']['protocol']}://{config['primary']['host']}:{config['primary']['port']}<br>
@@ -526,7 +548,7 @@ class StreamlitOnlineSaleClient:
             approval_input = st.text_input(
                 "✅ Approval Code (4 digits)",
                 placeholder="1234",
-                help="Enter 4-digit online approval code from issuer"
+                help="Enter 4-digit online approval code from issuer (Protocol 101.1)"
             )
             
             # Merchant Name
@@ -714,8 +736,7 @@ class StreamlitOnlineSaleClient:
             st.sidebar.markdown("### 🔧 ISO 8583 Debug Info")
             st.sidebar.markdown(f"""
             <div class="debug-box">
-            <strong>Message Details:</strong><br>
-            Transaction Type: <strong>ONLINE SALE</strong><br>
+            <strong>Protocol 101.1 - Online Authorization</strong><br>
             Server: {selected_server.upper()} ({server_config['protocol']})<br>
             MTI: {mti}<br>
             DE 3 (Processing): {data_elements[3]}<br>
@@ -863,7 +884,7 @@ class StreamlitOnlineSaleClient:
             return
         
         # Build message
-        with st.spinner("🔄 Building Online Sale message..."):
+        with st.spinner("🔄 Building ISO 8583 Message..."):
             message = self.build_online_sale_message(
                 pan=clean_card,
                 amount=form_data['amount'],
@@ -886,7 +907,7 @@ class StreamlitOnlineSaleClient:
                 return
         
         # Send transaction
-        with st.spinner("📤 Processing online payment..."):
+        with st.spinner("📤 Processing Online Authorization..."):
             result = self.send_transaction(message)
             self.disconnect()
         
@@ -911,7 +932,7 @@ class StreamlitOnlineSaleClient:
             st.session_state.transaction_history.append(transaction_record)
         else:
             if result.get('response_code') == '00':
-                st.success("✅ Online Payment Approved!")
+                st.success("✅ Online Authorization Approved!")
             else:
                 st.warning(f"⚠️ {result.get('response_message', 'Transaction completed with warning')}")
             
@@ -931,97 +952,141 @@ class StreamlitOnlineSaleClient:
             self.show_receipt(form_data, result)
 
     def show_receipt(self, form_data, result):
-        """Show payment receipt"""
+        """Show payment receipt in a popup style"""
         st.markdown("---")
-        st.header("🧾 Online Payment Receipt")
+        st.header("🧾 Payment Receipt")
         
-        status_color = "success-box" if result.get('response_code') == '00' else "receipt-box"
+        # Create receipt with better styling
+        if result.get('response_code') == '00':
+            border_color = "#28a745"
+            bg_color = "#d4edda"
+            status_text = "✅ PAYMENT APPROVED"
+        else:
+            border_color = "#ffc107"
+            bg_color = "#fff3cd"
+            status_text = "⚠️ PAYMENT PROCESSED"
         
         receipt_html = f"""
-        <div class="receipt-box {status_color}">
-            <h3 style="text-align: center; margin-bottom: 20px;">ONLINE PAYMENT RECEIPT</h3>
+        <div style="
+            border: 3px solid {border_color};
+            border-radius: 15px;
+            padding: 25px;
+            margin: 20px 0;
+            background-color: {bg_color};
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            font-family: Arial, sans-serif;
+        ">
+            <h2 style="text-align: center; color: #333; margin-bottom: 10px; border-bottom: 2px solid #ddd; padding-bottom: 10px;">
+                💳 PAYMENT RECEIPT
+            </h2>
+            <p style="text-align: center; color: #666; margin-bottom: 25px; font-size: 0.9em;">
+                ISO-8583 Base I Terminal • Protocol 101.1
+            </p>
             
-            <table style="width: 100%; border-collapse: collapse;">
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Merchant:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{form_data['merchant_name']}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Terminal ID:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.terminal_id}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Merchant ID:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.merchant_id}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Transaction Type:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">🟢 Online Sale</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Card Number:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{self.format_card_display(form_data['card_input'])}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Expiry:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{self.format_expiry_display(form_data['expiry_input'])}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Amount:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">${form_data['amount']:.2f}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Date/Time:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Status:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('response_message', 'Unknown')}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Approval Code:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('approval_code', 'N/A')}</td>
-            </tr>
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Response Code:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('response_code', 'N/A')}</td>
-            </tr>
-            </table>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
+                <div style="font-weight: bold; color: #555;">Merchant:</div>
+                <div>{form_data['merchant_name']}</div>
+                
+                <div style="font-weight: bold; color: #555;">Terminal ID:</div>
+                <div>{st.session_state.terminal_id}</div>
+                
+                <div style="font-weight: bold; color: #555;">Merchant ID:</div>
+                <div>{st.session_state.merchant_id}</div>
+                
+                <div style="font-weight: bold; color: #555;">Transaction Type:</div>
+                <div>🟢 Online Authorization</div>
+            </div>
             
-            <p style="text-align: center; margin-top: 20px; font-weight: bold;">THANK YOU FOR YOUR BUSINESS</p>
+            <div style="background: white; padding: 15px; border-radius: 8px; margin: 15px 0;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <div style="font-weight: bold; color: #555;">Card Number:</div>
+                    <div style="font-family: monospace;">{self.format_card_display(form_data['card_input'])}</div>
+                    
+                    <div style="font-weight: bold; color: #555;">Expiry Date:</div>
+                    <div>{self.format_expiry_display(form_data['expiry_input'])}</div>
+                    
+                    <div style="font-weight: bold; color: #555;">Amount:</div>
+                    <div style="font-weight: bold; font-size: 1.1em;">${form_data['amount']:.2f}</div>
+                    
+                    <div style="font-weight: bold; color: #555;">Date/Time:</div>
+                    <div>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
+                <div style="font-weight: bold; color: #555;">Status:</div>
+                <div style="font-weight: bold;">{result.get('response_message', 'Unknown')}</div>
+                
+                <div style="font-weight: bold; color: #555;">Approval Code:</div>
+                <div style="font-family: monospace; font-weight: bold; font-size: 1.1em;">{result.get('approval_code', 'N/A')}</div>
+                
+                <div style="font-weight: bold; color: #555;">Response Code:</div>
+                <div style="font-family: monospace;">{result.get('response_code', 'N/A')}</div>
+            </div>
+            
+            <div style="text-align: center; margin-top: 25px; padding-top: 15px; border-top: 2px solid #ddd;">
+                <p style="font-weight: bold; color: #333; font-size: 1.1em;">THANK YOU FOR YOUR BUSINESS</p>
+                <p style="color: #666; font-size: 0.9em;">Transaction Ref: {st.session_state.stan_counter-1} • Protocol 101.1</p>
+            </div>
         </div>
         """
         
         st.markdown(receipt_html, unsafe_allow_html=True)
         
-        # Download button
-        receipt_text = self.generate_receipt_text(form_data, result)
-        st.download_button(
-            label="📄 Download Receipt",
-            data=receipt_text,
-            file_name=f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain"
-        )
+        # Download buttons
+        st.markdown("---")
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            col_a, col_b = st.columns(2)
+            
+            with col_a:
+                # Download as TXT
+                receipt_text = self.generate_receipt_text(form_data, result)
+                st.download_button(
+                    label="📄 Download TXT",
+                    data=receipt_text,
+                    file_name=f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            
+            with col_b:
+                # Print functionality
+                st.button(
+                    "🖨️ Print Receipt",
+                    use_container_width=True,
+                    help="Print this receipt",
+                    on_click=lambda: st.success("Ready for printing! Use browser print function.")
+                )
 
     def generate_receipt_text(self, form_data, result):
-        """Generate receipt text for download"""
+        """Generate formatted receipt text for download"""
         return f"""
-ONLINE PAYMENT RECEIPT
-=====================
+{'=' * 50}
+         PAYMENT RECEIPT
+        ISO-8583 Base I Terminal
+{'=' * 50}
+
 Merchant: {form_data['merchant_name']}
 Terminal ID: {st.session_state.terminal_id}
 Merchant ID: {st.session_state.merchant_id}
-Transaction Type: Online Sale
------------------------------
+Transaction: Online Authorization (Protocol 101.1)
+{'-' * 50}
+
 Card: {self.format_card_display(form_data['card_input'])}
 Expiry: {self.format_expiry_display(form_data['expiry_input'])}
 Amount: ${form_data['amount']:.2f}
-Date/Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+{'-' * 50}
+
 Status: {result.get('response_message', 'Unknown')}
 Approval Code: {result.get('approval_code', 'N/A')}
 Response Code: {result.get('response_code', 'N/A')}
-=====================
-THANK YOU FOR YOUR BUSINESS
+Transaction Ref: {st.session_state.stan_counter-1}
+{'-' * 50}
+
+      THANK YOU FOR YOUR BUSINESS
+{'=' * 50}
 """
 
     def disconnect(self):
@@ -1094,13 +1159,13 @@ THANK YOU FOR YOUR BUSINESS
             # Process payment button
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
-                if st.button("🚀 Process Online Payment", type="primary", use_container_width=True):
+                if st.button("🚀 Process Online Authorization", type="primary", use_container_width=True):
                     self.process_payment(form_data)
 
 def main():
     """Main function"""
-    client = StreamlitOnlineSaleClient()
-    client.run()
+    terminal = ISO8583BaseITerminal()
+    terminal.run()
 
 if __name__ == "__main__":
     main()
