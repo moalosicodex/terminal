@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Professional Payment Terminal Web Application
-With Complete ISO 8583 Implementation and Bug Fixes
+With Flexible Approval Code Length (4 or 6 digits)
 """
 
 import streamlit as st
@@ -36,7 +36,7 @@ if not st.session_state.authenticated:
 
 class StreamlitForceSaleClient:
     """
-    Complete Force Sale Client with Certificate Management and ISO 8583 Fixes
+    Complete Force Sale Client with Flexible Approval Code Length
     """
     
     def __init__(self):
@@ -53,6 +53,8 @@ class StreamlitForceSaleClient:
             st.session_state.transaction_history = []
         if 'cert_files_uploaded' not in st.session_state:
             st.session_state.cert_files_uploaded = False
+        if 'approval_code_length' not in st.session_state:
+            st.session_state.approval_code_length = "6-digit"  # Default to 6-digit
             
         self.SERVERS = {
             'primary': {'host': '102.163.40.20', 'port': 8090},
@@ -117,6 +119,13 @@ class StreamlitForceSaleClient:
             background-color: #f8f9fa;
             font-family: monospace;
             font-size: 0.8em;
+        }
+        .config-box {
+            border: 1px solid #17a2b8;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px 0;
+            background-color: #d1ecf1;
         }
         </style>
         """, unsafe_allow_html=True)
@@ -221,6 +230,19 @@ class StreamlitForceSaleClient:
                 else:
                     st.error("❌ " + cert_message)
                 
+                st.subheader("Transaction Configuration")
+                
+                # Approval Code Length Selection
+                approval_length = st.selectbox(
+                    "Approval Code Format",
+                    ["6-digit", "4-digit"],
+                    help="Choose between 6-digit (standard) or 4-digit approval codes",
+                    index=0 if st.session_state.approval_code_length == "6-digit" else 1
+                )
+                st.session_state.approval_code_length = approval_length
+                
+                st.info(f"**Current Format:** {approval_length} approval codes")
+                
                 st.subheader("Server Configuration")
                 server_choice = st.selectbox(
                     "Select Server",
@@ -277,13 +299,13 @@ class StreamlitForceSaleClient:
             'card_input': '4111111111111111',
             'expiry_input': '1225',
             'amount': 25.00,
-            'approval_input': '1234',
+            'approval_input': '123456' if st.session_state.approval_code_length == "6-digit" else '1234',
             'merchant_name': 'Demo Store'
         }
         
         demo_result = {
             'response_message': 'APPROVED - Demo Transaction',
-            'approval_code': 'DEMO',
+            'approval_code': '123456' if st.session_state.approval_code_length == "6-digit" else '1234',
             'full_auth_code': '123456',
             'response_code': '00'
         }
@@ -296,6 +318,7 @@ class StreamlitForceSaleClient:
             'status': demo_result['response_message'],
             'approval_code': demo_result['approval_code'],
             'response_code': demo_result['response_code'],
+            'approval_format': st.session_state.approval_code_length,
             'demo': True
         }
         st.session_state.transaction_history.append(transaction_record)
@@ -307,6 +330,17 @@ class StreamlitForceSaleClient:
         """Render main header"""
         st.markdown('<div class="main-header">💳 Professional Payment Terminal</div>', 
                    unsafe_allow_html=True)
+        
+        # Show current configuration
+        st.markdown(f"""
+        <div class="config-box">
+            <strong>Current Configuration:</strong><br>
+            • Approval Code Format: <strong>{st.session_state.approval_code_length}</strong><br>
+            • Merchant ID: {st.session_state.merchant_id}<br>
+            • Terminal ID: {st.session_state.terminal_id}
+        </div>
+        """, unsafe_allow_html=True)
+        
         st.markdown("---")
 
     def validate_card_number(self, card_input: str) -> Tuple[bool, str]:
@@ -333,6 +367,22 @@ class StreamlitForceSaleClient:
             return False, "Month must be between 01 and 12"
         
         return True, clean_expiry
+
+    def validate_approval_code(self, approval_input: str) -> Tuple[bool, str]:
+        """Validate approval code based on selected format"""
+        clean_code = re.sub(r'\D', '', approval_input)
+        
+        if st.session_state.approval_code_length == "6-digit":
+            if len(clean_code) != 6:
+                return False, f"6-digit approval code must be exactly 6 digits (you entered {len(clean_code)})"
+        else:  # 4-digit
+            if len(clean_code) != 4:
+                return False, f"4-digit approval code must be exactly 4 digits (you entered {len(clean_code)})"
+        
+        if not clean_code.isdigit():
+            return False, "Approval code must contain only digits"
+        
+        return True, clean_code
 
     def render_payment_form(self):
         """Render payment form"""
@@ -365,11 +415,14 @@ class StreamlitForceSaleClient:
                 format="%.2f"
             )
             
-            # Approval Code
+            # Approval Code - dynamic placeholder based on selection
+            approval_placeholder = "123456" if st.session_state.approval_code_length == "6-digit" else "1234"
+            approval_help = f"Enter {st.session_state.approval_code_length} approval code"
+            
             approval_input = st.text_input(
-                "✅ Approval Code (4 digits)",
-                placeholder="1234",
-                help="Force Sale requires a 4-digit approval code"
+                f"✅ Approval Code ({st.session_state.approval_code_length})",
+                placeholder=approval_placeholder,
+                help=approval_help
             )
             
             # Merchant Name
@@ -410,8 +463,10 @@ class StreamlitForceSaleClient:
         # Validate approval code
         if not form_data['approval_input']:
             errors.append("Approval code is required")
-        elif len(form_data['approval_input']) != 4 or not form_data['approval_input'].isdigit():
-            errors.append("Approval code must be 4 digits")
+        else:
+            valid, message = self.validate_approval_code(form_data['approval_input'])
+            if not valid:
+                errors.append(f"Approval: {message}")
             
         return errors
 
@@ -463,7 +518,7 @@ class StreamlitForceSaleClient:
             return f"Connection failed: {e}", False
 
     def build_force_sale_message(self, pan: str, amount: float, expiry: str, approval_code: str, merchant_name: str):
-        """Build Force Sale ISO message - CORRECTED VERSION"""
+        """Build Force Sale ISO message with flexible approval code length"""
         stan = str(st.session_state.stan_counter).zfill(6)
         st.session_state.stan_counter += 1
         
@@ -472,13 +527,18 @@ class StreamlitForceSaleClient:
         local_time = now.strftime("%H%M%S")
         local_date = now.strftime("%m%d")
         
-        # Convert 4-digit approval code to 6-digit auth code for DE 38
-        auth_code = approval_code.ljust(6, '0')  # Pad to 6 digits
+        # Handle approval code based on selected format
+        if st.session_state.approval_code_length == "6-digit":
+            # Use 6-digit code directly
+            auth_code = approval_code
+        else:
+            # For 4-digit codes, pad to 6 digits for ISO 8583
+            auth_code = approval_code.ljust(6, '0')
         
-        # ISO 8583 data elements - CORRECTED
+        # ISO 8583 data elements
         data_elements = {
             2: pan,  # LLVAR field
-            3: "010000",  # CORRECTED: Processing Code for Force Sale
+            3: "010000",  # Processing Code for Force Sale
             4: str(int(amount * 100)).zfill(12),  # Amount in cents
             7: transmission_time,  # Transmission date & time
             11: stan,  # Systems trace audit number
@@ -492,7 +552,7 @@ class StreamlitForceSaleClient:
             32: "00000000001",  # Acquiring institution ID code
             35: pan + "=" + expiry + "100",  # Track 2 data
             37: stan + "FSL",  # Retrieval reference number
-            38: auth_code,  # CORRECTED: Approval code (6 characters)
+            38: auth_code,  # Approval code (6 characters always for ISO 8583)
             41: st.session_state.terminal_id,  # Terminal ID
             42: st.session_state.merchant_id,  # Merchant ID
             43: merchant_name.ljust(40)[:40],  # Merchant name (40 chars)
@@ -539,6 +599,9 @@ class StreamlitForceSaleClient:
             DE 3 (Processing): {data_elements[3]}<br>
             DE 38 (Auth): {data_elements[38]}<br>
             DE 4 (Amount): {data_elements[4]}<br>
+            Approval Format: {st.session_state.approval_code_length}<br>
+            Input Code: {approval_code}<br>
+            Sent Code: {auth_code}<br>
             Total Length: {message_length}<br>
             STAN: {stan}
             </div>
@@ -547,7 +610,7 @@ class StreamlitForceSaleClient:
         return length_prefix + iso_message.encode('ascii')
 
     def parse_visa_response(self, response: bytes) -> Dict[str, Any]:
-        """Parse Visa response - IMPROVED VERSION"""
+        """Parse Visa response"""
         try:
             if len(response) < 4:
                 return {"error": "Response too short"}
@@ -563,7 +626,8 @@ class StreamlitForceSaleClient:
             result = {
                 "mti": response_str[0:4] if len(response_str) >= 4 else "",
                 "raw_response": response_str,
-                "length": len(response)
+                "length": len(response),
+                "approval_format": st.session_state.approval_code_length
             }
             
             # Visa response codes
@@ -588,7 +652,7 @@ class StreamlitForceSaleClient:
                 '96': 'ERROR - System Malfunction'
             }
             
-            # Extract response code (DE 39) - look for field 39 in the response
+            # Extract response code (DE 39)
             if "39" in response_str:
                 idx = response_str.find("39")
                 if idx + 2 < len(response_str):
@@ -603,14 +667,18 @@ class StreamlitForceSaleClient:
                     # DE 38 is 6 characters fixed length
                     auth_code = response_str[idx+2:idx+8]
                     result["auth_code"] = auth_code
-                    result["approval_code"] = auth_code[:4]  # First 4 digits
+                    
+                    # Format approval code based on user selection
+                    if st.session_state.approval_code_length == "6-digit":
+                        result["approval_code"] = auth_code  # Use full 6 digits
+                    else:
+                        result["approval_code"] = auth_code[:4]  # Use first 4 digits
+                    
                     result["full_auth_code"] = auth_code
             
             # If we didn't find structured fields, try to extract basic info
             if "response_code" not in result and len(response_str) >= 4:
-                # Try to find response code at common positions
                 if len(response_str) > 20:
-                    # Common position for response code in ISO8583
                     result["response_code"] = response_str[20:22] if len(response_str) > 22 else "XX"
                     result["response_message"] = visa_codes.get(result["response_code"], "UNKNOWN")
             
@@ -624,6 +692,8 @@ class StreamlitForceSaleClient:
                 <strong>Parsed:</strong><br>
                 Response Code: {result.get('response_code', 'N/A')}<br>
                 Auth Code: {result.get('auth_code', 'N/A')}<br>
+                Approval Code: {result.get('approval_code', 'N/A')}<br>
+                Format: {result.get('approval_format', 'N/A')}<br>
                 Message: {result.get('response_message', 'N/A')}
                 </div>
                 """, unsafe_allow_html=True)
@@ -653,14 +723,15 @@ class StreamlitForceSaleClient:
         except Exception as e:
             return {"error": f"Send failed: {e}"}
 
-    def validate_iso_message(self, message_data: dict) -> list:
+    def validate_iso_message(self, form_data):
         """Validate ISO 8583 data before sending"""
         errors = []
         
-        # Check DE 38 (Approval Code)
-        approval_code = message_data.get('approval_code', '')
-        if len(approval_code) != 4 or not approval_code.isdigit():
-            errors.append("DE 38: Approval code must be 4 digits")
+        # Validate approval code based on selected format
+        approval_code = form_data.get('approval_input', '')
+        valid, message = self.validate_approval_code(approval_code)
+        if not valid:
+            errors.append(f"Approval Code: {message}")
     
         return errors
 
@@ -690,9 +761,10 @@ class StreamlitForceSaleClient:
         # Clean inputs
         card_valid, clean_card = self.validate_card_number(form_data['card_input'])
         expiry_valid, clean_expiry = self.validate_expiry_date(form_data['expiry_input'])
+        approval_valid, clean_approval = self.validate_approval_code(form_data['approval_input'])
         
-        if not card_valid or not expiry_valid:
-            st.error("❌ Invalid card data")
+        if not card_valid or not expiry_valid or not approval_valid:
+            st.error("❌ Invalid input data")
             return
         
         # Build message
@@ -701,7 +773,7 @@ class StreamlitForceSaleClient:
                 pan=clean_card,
                 amount=form_data['amount'],
                 expiry=clean_expiry,
-                approval_code=form_data['approval_input'],
+                approval_code=clean_approval,
                 merchant_name=form_data['merchant_name']
             )
         
@@ -735,6 +807,7 @@ class StreamlitForceSaleClient:
                 'status': f"FAILED: {result['error']}",
                 'approval_code': 'N/A',
                 'response_code': 'ER',
+                'approval_format': st.session_state.approval_code_length,
                 'demo': False
             }
             st.session_state.transaction_history.append(transaction_record)
@@ -752,6 +825,7 @@ class StreamlitForceSaleClient:
                 'status': result.get('response_message', 'Unknown'),
                 'approval_code': result.get('approval_code', 'N/A'),
                 'response_code': result.get('response_code', 'N/A'),
+                'approval_format': st.session_state.approval_code_length,
                 'demo': False
             }
             st.session_state.transaction_history.append(transaction_record)
@@ -780,6 +854,10 @@ class StreamlitForceSaleClient:
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.terminal_id}</td>
             </tr>
             <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Approval Format:</strong></td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;">{st.session_state.approval_code_length}</td>
+            </tr>
+            <tr>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Card Number:</strong></td>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{self.format_card_display(form_data['card_input'])}</td>
             </tr>
@@ -804,7 +882,7 @@ class StreamlitForceSaleClient:
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('approval_code', 'N/A')}</td>
             </tr>
             <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Auth Code:</strong></td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;"><strong>Full Auth Code:</strong></td>
                 <td style="padding: 8px; border-bottom: 1px solid #ccc;">{result.get('full_auth_code', 'N/A')}</td>
             </tr>
             <tr>
@@ -836,6 +914,7 @@ FORCE SALE RECEIPT
 Merchant: {form_data['merchant_name']}
 Terminal ID: {st.session_state.terminal_id}
 Merchant ID: {st.session_state.merchant_id}
+Approval Format: {st.session_state.approval_code_length}
 ------------------
 Card: {self.format_card_display(form_data['card_input'])}
 Expiry: {self.format_expiry_display(form_data['expiry_input'])}
@@ -843,7 +922,7 @@ Amount: ${form_data['amount']:.2f}
 Date/Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Status: {result.get('response_message', 'Unknown')}
 Approval Code: {result.get('approval_code', 'N/A')}
-Auth Code: {result.get('full_auth_code', 'N/A')}
+Full Auth Code: {result.get('full_auth_code', 'N/A')}
 Response Code: {result.get('response_code', 'N/A')}
 ==================
 THANK YOU FOR YOUR BUSINESS
@@ -883,13 +962,15 @@ THANK YOU FOR YOUR BUSINESS
             
         for i, transaction in enumerate(reversed(st.session_state.transaction_history[-10:]), 1):
             demo_indicator = " (Demo)" if transaction.get('demo', False) else ""
+            format_indicator = f" [{transaction.get('approval_format', 'N/A')}]"
             status_color = "✅" if transaction['status'].startswith('APPROVED') else "❌" if transaction['status'].startswith('FAILED') else "⚠️"
             
-            with st.expander(f"{status_color} Transaction {i} - ${transaction['amount']:.2f} - {transaction['timestamp'].strftime('%H:%M:%S')}{demo_indicator}"):
+            with st.expander(f"{status_color} Transaction {i} - ${transaction['amount']:.2f} - {transaction['timestamp'].strftime('%H:%M:%S')}{demo_indicator}{format_indicator}"):
                 st.write(f"**Card:** {transaction['card']}")
                 st.write(f"**Amount:** ${transaction['amount']:.2f}")
                 st.write(f"**Status:** {transaction['status']}")
                 st.write(f"**Approval Code:** {transaction['approval_code']}")
+                st.write(f"**Approval Format:** {transaction.get('approval_format', 'N/A')}")
                 st.write(f"**Response Code:** {transaction['response_code']}")
                 st.write(f"**Time:** {transaction['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
                 
